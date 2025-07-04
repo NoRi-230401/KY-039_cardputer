@@ -42,12 +42,10 @@ namespace AppConfig
   constexpr uint8_t LANG_MAX = 1;
 
   // Sensor and timing settings
-  namespace Sensor
-  {
-    constexpr unsigned long SR04_CHECK_INTERVAL_MS = 1 * 1000UL;
-    constexpr unsigned long SENSOR_TIMEOUT_MS = 60;
-    constexpr unsigned long MAX_ECHO_DURATION_US = 38000; // Corresponds to ~6.5m, a safe max for HC-SR04
-  }
+  // namespace Sensor
+  // {
+  //   constexpr unsigned long KY039_CHECK_INTERVAL_MS = 20UL; // 20mSEC interval
+  // }
 
   // Battery status check
   namespace Battery
@@ -66,9 +64,9 @@ namespace AppConfig
     constexpr int BATLVL_VALUE_LEN = 3;
     constexpr int BATLVL_PERCENT_POS = 29;
     constexpr int SETTING_DISP_POS = 2;
-    constexpr int MEAS_UNIT_POS = 23;
+    // constexpr int MEAS_UNIT_POS = 23;
+    constexpr int MEAS_UNIT_POS = 21;
     constexpr int MEAS_ITEM_POS = 2;
-    constexpr int DISTANCE_FONT_SIZE = 48;
     constexpr int MEAS_ITEM_FONT_SIZE = 24;
   }
 }
@@ -91,11 +89,14 @@ const char *NVM_LOWBAT = "lbat";
 const char *NVM_LANG = "lang";
 const char *LANG[] = {"English", "日本語"};
 static uint8_t LANG_INDEX = 0;
-const char *meas_items[] = {"Distance", "距離"};
+const char *meas_items[] = {"Pulse Rate", "脈拍数"};
 
 void setup();
 void loop();
-void SR04_sensor();
+void ky039Sensor();
+void ky039Init();
+void calcBeat(float newData);
+void prtBPM(float temp_val);
 void dispInit();
 bool keyCheck();
 void settings();
@@ -110,32 +111,13 @@ void prtSetting(const char *msg, const char *data);
 void changeBright(KeyNum keyNo);
 void changeLowBatThr(KeyNum keyNo);
 void settingsInit();
-void prtDistance(double temp_val);
 void batteryState();
 void prtBatLvl(uint8_t batLvl);
 void lowBatteryCheck(uint8_t batLvl);
 
-// --------------------------------------------------------
-// --- For non-blocking HC-SR04 reading ---
-volatile unsigned long echoStartTime = 0;
-volatile unsigned long echoEndTime = 0;
-volatile bool echoReceived = false;
-void IRAM_ATTR echo_isr();
-
-// --- HC-SR04 control Pin Assignment ----
-constexpr uint8_t echoPin = 1; // Echo Pin
-constexpr uint8_t trigPin = 2; // Trigger Pin
-
 void setup()
 {
   m5stack_begin();
-
-  pinMode(echoPin, INPUT);
-  pinMode(trigPin, OUTPUT);
-  digitalWrite(trigPin, LOW);
-
-  // Attach interrupt to the echo pin
-  attachInterrupt(digitalPinToInterrupt(echoPin), echo_isr, CHANGE);
 
   if (SD_ENABLE)
   { // M5stack-SD-Updater lobby
@@ -144,112 +126,164 @@ void setup()
   }
 
   settingsInit();
+
+  ky039Init();
   dispInit();
   canvas.pushSprite(0, 0);
+  dbPrtln("end of setup");
 }
 
 void loop()
 {
-  SR04_sensor();
+  ky039Sensor();
   batteryState();
 
   if (keyCheck())
     settings();
 
-  vTaskDelay(1);
+  // vTaskDelay(1);
 }
 
-#define DIST_LINE_INDEX 3
-#define DIST_DISP_WIDTH 27
-static unsigned long prev_sr04_trigger_ms = 0L;
-static bool sr04_triggered = false; // Flag to indicate a trigger pulse was sent
+constexpr uint8_t sensorPin = 1;
 
-void SR04_sensor()
+void ky039Init()
 {
-  unsigned long current_ms = millis();
-  bool needs_update = false;
-
-  // Trigger the sensor at regular intervals if not waiting for an echo
-  if (!sr04_triggered && (current_ms - prev_sr04_trigger_ms >= AppConfig::Sensor::SR04_CHECK_INTERVAL_MS))
-  {
-    prev_sr04_trigger_ms = current_ms;
-    echoReceived = false;
-    sr04_triggered = true; // Set flag that we are waiting for an echo
-
-    // Send trigger pulse
-    digitalWrite(trigPin, LOW);
-    delayMicroseconds(2);
-    digitalWrite(trigPin, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(trigPin, LOW);
-  }
-
-  // Check if a new echo has been received
-  if (echoReceived)
-  {
-    // Disable interrupts temporarily to safely read volatile variables
-    noInterrupts();
-    unsigned long duration = echoEndTime - echoStartTime;
-    echoReceived = false; // Reset the flag
-    interrupts();
-
-    // Check for valid duration (e.g., less than 38ms for ~6.5m range)
-    if (duration > 0 && duration < AppConfig::Sensor::MAX_ECHO_DURATION_US)
-    {
-      // Speed of sound in cm/us (at approx. 20°C)
-      const double soundVelocity = 34350.0 / 1000000.0;
-      double distance = duration * soundVelocity / 2; // [cm]
-      prtDistance(distance);
-      dbPrtln("Distance = " + String(distance) + " cm");
-    }
-    else
-    {
-      // Duration too long or zero, likely an error or out of range
-      prtDistance(NAN);
-      dbPrtln("Distance = NAN");
-    }
-    needs_update = true;
-  }
-  // Check for timeout (e.g., 60ms is a reasonable timeout for HC-SR04)
-  else if (sr04_triggered && (current_ms - prev_sr04_trigger_ms > AppConfig::Sensor::SENSOR_TIMEOUT_MS))
-  {
-    prtDistance(NAN); // Report timeout as Not-A-Number
-    needs_update = true;
-  }
-
-  if (needs_update)
-  {
-    sr04_triggered = false;
-    canvas.pushSprite(0, 0);
-  }
+  pinMode(sensorPin, ANALOG);
+  // for (int i = 0; i < samp_siz; i++)
+  //   SAMPS[i] = 0;
 }
 
-void IRAM_ATTR echo_isr()
+constexpr unsigned long MEAS_PERIOD_MS = 20; // measuremnt interval msec
+static unsigned long PREV_MEAS_TM = 0;
+static uint32_t READ_VAL = 0;
+static uint32_t N_MEAS = 0;
+
+void ky039Sensor()
 {
-  if (digitalRead(echoPin) == HIGH)
+  // calculate an average of the  sensor
+  // during a 20 ms period (this will eliminate
+  // the 50  Hz noise caused by electric light
+  unsigned long current_meas_tm = millis();
+  READ_VAL += analogRead(sensorPin); // read and add values...
+  N_MEAS++;
+
+  if (current_meas_tm - PREV_MEAS_TM < MEAS_PERIOD_MS)
+    return;
+
+  float avData = (float)READ_VAL / N_MEAS; // and take an average of the values
+  // Serial.println(String(avData));
+  // Serial.printf(">avData:%f\n",avData);
+
+  PREV_MEAS_TM = current_meas_tm;
+  READ_VAL = 0;
+  N_MEAS = 0;
+
+  calcBeat(avData);
+}
+
+// constexpr int samp_siz = 4;
+constexpr int samp_siz = 10;
+static int samp_pos = 0;
+static float SAMPS[samp_siz] = {0};
+static float PREV_CURVE = 4096.0; // impossible value
+static bool isRISING = true;
+static int RISE_CNT = 0;
+static unsigned long BEAT_02 = 0, BEAT_03 = 0;
+static unsigned long PREV_BEAT_TM = 0;
+static float PREV_BPM_VALUE = 0;
+
+void calcBeat(float newData)
+{
+  // constexpr uint8_t rise_threshold = 4;
+  constexpr uint8_t rise_threshold = 6;
+
+  // Add the  newest measurement to an array
+  // and subtract the oldest measurement from  the array
+  // to maintain a sum of last measurements
+  SAMPS[samp_pos++] = newData;
+  samp_pos %= samp_siz;
+
+  // new curve : average of the values in the array
+  float sum_val = 0;
+  for (int i = 0; i < samp_siz; i++)
+    sum_val += SAMPS[i];
+  float new_curve = sum_val / samp_siz;
+  Serial.printf(">new_curve:%f\n", new_curve);
+
+  // check  for a rising curve (= a heart beat)
+  if (new_curve > PREV_CURVE)
   {
-    echoStartTime = micros();
+    RISE_CNT++;
+    if (!isRISING && RISE_CNT > rise_threshold)
+    {
+      //  Ok, we have detected a rising curve, which implies a heartbeat.
+      //  Record the time since last beat, keep track of the two previous
+      //  times (first, second, third) to get a weighed average.
+      // The rising  flag prevents us from detecting the same rise more than once.
+      unsigned long current_beat = millis() - PREV_BEAT_TM;
+      PREV_BEAT_TM = millis();
+      isRISING = true;
+
+      // Calculate the weighed average of heartbeat rate
+      // according  to the three last beats
+      // bpm : beats per minute
+      float bpmVal = 60000. / (0.4 * current_beat + 0.3 * BEAT_02 + 0.3 * BEAT_03);
+
+      if (bpmVal < 40 || bpmVal > 120)
+      { // invalid heart beat bpm .... reject
+        dbPrtln("invalid bpm value = " + String(bpmVal));
+        prtBPM(-1.0);  // invalid data
+      }
+      else if (abs(bpmVal - PREV_BPM_VALUE) > 10)
+      { // distributed unevenly bpm value ... not stable
+        dbPrtln(" distributed unevenly bpm value = " + String(bpmVal));
+        prtBPM(-1.0);  // invalid data
+      }
+      else if (new_curve < 2700 || new_curve > 2900)
+      {
+        dbPrtln(" invalid curve value = " + String(new_curve));
+        prtBPM(-1.0);  // invalid data
+      }
+      else if (current_beat < 500)
+      { // 500msec period -> 2Hz -> 120BPM .... invalid data 
+        dbPrtln(" invalid curve_beat = " + String(current_beat));
+        prtBPM(-1.0);  // invalid data
+      }
+      else
+      {
+        prtBPM(bpmVal);
+      }
+      PREV_BPM_VALUE = bpmVal;
+
+      BEAT_03 = BEAT_02;
+      BEAT_02 = current_beat;
+    }
   }
   else
   {
-    echoEndTime = micros();
-    echoReceived = true;
+    //  Ok, the curve is falling
+    isRISING = false;
+    RISE_CNT = 0;
   }
+  PREV_CURVE = new_curve;
 }
 
-static float PREV_DISTANCE = 0.0;
-void prtDistance(double temp_val)
+constexpr int BPM_FONT_SIZE = 48;
+constexpr int BPM_LINE_INDEX = 3;
+constexpr int BPM_DISP_WIDTH = 27;
+static float PREV_BPM_DISP = 0.0;
+void prtBPM(float temp_val)
 {
   // Skip redrawing if the value hasn't changed.
   // This handles both number-to-number and NAN-to-NAN comparisons.
-  if (PREV_DISTANCE == temp_val || (isnan(PREV_DISTANCE) && isnan(temp_val)))
+  if (PREV_BPM_DISP == temp_val || (isnan(PREV_BPM_DISP) && isnan(temp_val)))
   {
     return;
   }
-  PREV_DISTANCE = temp_val;
+  PREV_BPM_DISP = temp_val;
 
   char buf[10];
-  if (isnan(temp_val))
+  if (isnan(temp_val) || temp_val< 0 )
   {
     snprintf(buf, sizeof(buf), "---.-");
   }
@@ -261,9 +295,11 @@ void prtDistance(double temp_val)
   canvas.setTextColor(TFT_WHITE, TFT_BLACK);
   canvas.setFont(&fonts::Font7);
   canvas.setTextSize(1);
-  canvas.fillRect(0, SC_LINES[DIST_LINE_INDEX], X_WIDTH, AppConfig::Layout::DISTANCE_FONT_SIZE, TFT_BLACK);
-  canvas.drawCenterString(buf, X_WIDTH / 2, SC_LINES[DIST_LINE_INDEX]);
+  canvas.fillRect(0, SC_LINES[BPM_LINE_INDEX], X_WIDTH, BPM_FONT_SIZE, TFT_BLACK);
+  canvas.drawCenterString(buf, X_WIDTH / 2, SC_LINES[BPM_LINE_INDEX]);
+  canvas.pushSprite(0, 0);
 }
+// ************************************************************************************
 
 void dispInit()
 {
@@ -283,7 +319,7 @@ void dispInit()
 
   //--L0 : title--------------
   canvas.setTextColor(TFT_SKYBLUE, TFT_BLACK);
-  canvas.drawString(F("- HC-SR04 Sensor -"), 0, SC_LINES[0]);
+  canvas.drawString(F("- KY-039 Heart Beat -"), 0, SC_LINES[0]);
 
   // L0 :Battery Level -----
   dispBatItem();
@@ -292,7 +328,7 @@ void dispInit()
 
   // L7 : Measuremnt items
   canvas.setTextColor(TFT_GREEN, TFT_BLACK);
-  canvas.drawString(F("cm"), W_CHR * AppConfig::Layout::MEAS_UNIT_POS, SC_LINES[7], &fonts::Font4);
+  canvas.drawString(F("bpm"), W_CHR * AppConfig::Layout::MEAS_UNIT_POS, SC_LINES[7], &fonts::Font4);
   dispMeasItem();
 }
 
@@ -543,7 +579,7 @@ void batteryState()
   // This will update consecutiveLowBatteryCount
   PREV_BATCHK_TM = currentTime;
   uint8_t batLvl = (uint8_t)M5Cardputer.Power.getBatteryLevel(); // Get battery level
-  dbPrtln("batLvl: " + String(batLvl));
+  // dbPrtln("batLvl: " + String(batLvl));
   if (batLvl > AppConfig::BATLVL_MAX)
     batLvl = AppConfig::BATLVL_MAX;
 
@@ -579,7 +615,7 @@ void prtBatLvl(uint8_t batLvl)
 
   char msg[4] = ""; // message buffer
   snprintf(msg, sizeof(msg), "%3u", batLvl);
-  dbPrtln(msg);
+  // dbPrtln(msg);
 
   canvas.fillRect(W_CHR * AppConfig::Layout::BATLVL_VALUE_POS, SC_LINES[0], W_CHR * AppConfig::Layout::BATLVL_VALUE_LEN, H_CHR, TFT_BLACK); // clear
   canvas.setTextColor(TFT_WHITE, TFT_BLACK);

@@ -42,10 +42,10 @@ void m5stack_begin()
   dbPrtln("Wi-Fi and Bluetooth disabled.");
 
   // Reduce power consumption by lowering CPU frequency (e.g., 80MHz)
-  if (setCpuFrequencyMhz(80))
-  {
-    dbPrtln("CPU Freq set to: " + String(getCpuFrequencyMhz()) + " MHz");
-  }
+  // if (setCpuFrequencyMhz(80))
+  // {
+  //   dbPrtln("CPU Freq set to: " + String(getCpuFrequencyMhz()) + " MHz");
+  // }
 
 
   // Calculate Cardputer specific display scale parameters
