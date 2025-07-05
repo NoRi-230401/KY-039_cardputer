@@ -89,7 +89,7 @@ const char *NVM_LOWBAT = "lbat";
 const char *NVM_LANG = "lang";
 const char *LANG[] = {"English", "日本語"};
 static uint8_t LANG_INDEX = 0;
-const char *meas_items[] = {"Pulse Rate", "脈拍数"};
+const char *meas_items[] = {"Pulse Rate", "脈拍"};
 
 void setup();
 void loop();
@@ -171,8 +171,6 @@ void ky039Sensor()
     return;
 
   float avData = (float)READ_VAL / N_MEAS; // and take an average of the values
-  // Serial.println(String(avData));
-  // Serial.printf(">avData:%f\n",avData);
 
   PREV_MEAS_TM = current_meas_tm;
   READ_VAL = 0;
@@ -181,21 +179,28 @@ void ky039Sensor()
   calcBeat(avData);
 }
 
+// moving averaging sampling
 // constexpr int samp_siz = 4;
-constexpr int samp_siz = 10;
-static int samp_pos = 0;
+// constexpr int samp_siz = 10;
+constexpr int samp_siz = 15;
+// constexpr int samp_siz = 20;
+
+static int samp_pos = 0;            // current position in the array
 static float SAMPS[samp_siz] = {0};
+// ---------------------------------------------
+
 static float PREV_CURVE = 4096.0; // impossible value
 static bool isRISING = true;
 static int RISE_CNT = 0;
-static unsigned long BEAT_02 = 0, BEAT_03 = 0;
+static unsigned long PREV_BEAT01 = 0, PREV_BEAT02 = 0;
 static unsigned long PREV_BEAT_TM = 0;
-static float PREV_BPM_VALUE = 0;
+static float PREV_BPMVAL01 = 0;
+static float PREV_BPMVAL02 = 0;
 
 void calcBeat(float newData)
 {
-  // constexpr uint8_t rise_threshold = 4;
-  constexpr uint8_t rise_threshold = 6;
+  constexpr uint8_t rise_threshold = 4;
+  // constexpr uint8_t rise_threshold = 6;
 
   // Add the  newest measurement to an array
   // and subtract the oldest measurement from  the array
@@ -207,11 +212,11 @@ void calcBeat(float newData)
   float sum_val = 0;
   for (int i = 0; i < samp_siz; i++)
     sum_val += SAMPS[i];
-  float new_curve = sum_val / samp_siz;
-  Serial.printf(">new_curve:%f\n", new_curve);
+  float current_curve = sum_val / samp_siz;
+  Serial.printf(">current_curve:%f\n", current_curve);
 
   // check  for a rising curve (= a heart beat)
-  if (new_curve > PREV_CURVE)
+  if (current_curve > PREV_CURVE)
   {
     RISE_CNT++;
     if (!isRISING && RISE_CNT > rise_threshold)
@@ -227,36 +232,39 @@ void calcBeat(float newData)
       // Calculate the weighed average of heartbeat rate
       // according  to the three last beats
       // bpm : beats per minute
-      float bpmVal = 60000. / (0.4 * current_beat + 0.3 * BEAT_02 + 0.3 * BEAT_03);
+      float current_bpmVal = 60000. / (0.4 * current_beat + 0.3 * PREV_BEAT01 + 0.3 * PREV_BEAT02);
 
-      if (bpmVal < 40 || bpmVal > 120)
-      { // invalid heart beat bpm .... reject
-        dbPrtln("invalid bpm value = " + String(bpmVal));
-        prtBPM(-1.0);  // invalid data
+      // *** SELECT VALID DATA ***
+      if (current_curve < 2400.0 || current_curve > 2900.0)  // AD value
+      {// Not the desired data
+        dbPrtln(" invalid curve value = " + String(current_curve));
+        prtBPM(-1.0); // invalid data
       }
-      else if (abs(bpmVal - PREV_BPM_VALUE) > 10)
-      { // distributed unevenly bpm value ... not stable
-        dbPrtln(" distributed unevenly bpm value = " + String(bpmVal));
-        prtBPM(-1.0);  // invalid data
-      }
-      else if (new_curve < 2700 || new_curve > 2900)
-      {
-        dbPrtln(" invalid curve value = " + String(new_curve));
-        prtBPM(-1.0);  // invalid data
-      }
-      else if (current_beat < 500)
-      { // 500msec period -> 2Hz -> 120BPM .... invalid data 
+      else if (current_beat < 500.0 || current_beat > 2000.0) // msec
+      { //  500msec period -> 2Hz   -> 120BPM .... invalid data
+        // 2000msec period -> 0.5Hz ->  30BPM .... invalid data
         dbPrtln(" invalid curve_beat = " + String(current_beat));
-        prtBPM(-1.0);  // invalid data
+        // prtBPM(-1.0); // invalid data
+      }
+      else if (current_bpmVal < 30.0 || current_bpmVal > 120.0) // bpm
+      { // invalid heart beat bpm .... reject
+        dbPrtln("invalid bpm value = " + String(current_bpmVal));
+        // prtBPM(-1.0); // invalid data
+      }
+      else if (abs(current_bpmVal - PREV_BPMVAL01) > 5 || abs(current_bpmVal - PREV_BPMVAL02) > 5)  // bpm
+      { // distributed unevenly value ... not stable
+        dbPrtln(" distributed unevenly bpm value = " + String(current_bpmVal));
+        // prtBPM(-1.0); // invalid data
       }
       else
       {
-        prtBPM(bpmVal);
+        prtBPM(current_bpmVal);
       }
-      PREV_BPM_VALUE = bpmVal;
+      PREV_BPMVAL02 = PREV_BPMVAL01;
+      PREV_BPMVAL01 = current_bpmVal;
 
-      BEAT_03 = BEAT_02;
-      BEAT_02 = current_beat;
+      PREV_BEAT02 = PREV_BEAT01;
+      PREV_BEAT01 = current_beat;
     }
   }
   else
@@ -265,7 +273,7 @@ void calcBeat(float newData)
     isRISING = false;
     RISE_CNT = 0;
   }
-  PREV_CURVE = new_curve;
+  PREV_CURVE = current_curve;
 }
 
 constexpr int BPM_FONT_SIZE = 48;
@@ -283,7 +291,7 @@ void prtBPM(float temp_val)
   PREV_BPM_DISP = temp_val;
 
   char buf[10];
-  if (isnan(temp_val) || temp_val< 0 )
+  if (isnan(temp_val) || temp_val < 0)
   {
     snprintf(buf, sizeof(buf), "---.-");
   }
