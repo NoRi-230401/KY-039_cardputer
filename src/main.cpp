@@ -416,7 +416,7 @@ void prtBPM(float temp_val)
   canvas.setFont(&fonts::Font7);
   if (DISP_MODE == 1)
   { // for plot disp mode
-    canvas.fillRect(0, 0, 80, 34, TFT_BLACK);
+    canvas.fillRect(0, 0, 100, 34, TFT_BLACK);
     canvas.setTextSize(0.70);
     canvas.drawString(buf, 0, 0);
   }
