@@ -41,12 +41,6 @@ namespace AppConfig
   constexpr uint8_t LANG_INIT = 0; // 0:English 1:Japanese
   constexpr uint8_t LANG_MAX = 1;
 
-  // Sensor and timing settings
-  // namespace Sensor
-  // {
-  //   constexpr unsigned long KY039_CHECK_INTERVAL_MS = 20UL; // 20mSEC interval
-  // }
-
   // Battery status check
   namespace Battery
   {
@@ -64,7 +58,6 @@ namespace AppConfig
     constexpr int BATLVL_VALUE_LEN = 3;
     constexpr int BATLVL_PERCENT_POS = 29;
     constexpr int SETTING_DISP_POS = 2;
-    // constexpr int MEAS_UNIT_POS = 23;
     constexpr int MEAS_UNIT_POS = 21;
     constexpr int MEAS_ITEM_POS = 2;
     constexpr int MEAS_ITEM_FONT_SIZE = 24;
@@ -76,6 +69,7 @@ const char KEY_SETTING_ESCAPE = '`';
 const char KEY_SETTING_BRIGHTNESS = '1';
 const char KEY_SETTING_LOWBAT = '2';
 const char KEY_SETTING_LANG = '3';
+const char KEY_SETTING_DISP = '0';
 const char KEY_UP = ';';
 const char KEY_DOWN = '.';
 const char KEY_LEFT = ',';
@@ -97,6 +91,7 @@ void ky039Sensor();
 void ky039Init();
 void calcBeat(float newData);
 void prtBPM(float temp_val);
+void dispPlotInit();
 void dispInit();
 bool keyCheck();
 void settings();
@@ -115,6 +110,10 @@ void batteryState();
 void prtBatLvl(uint8_t batLvl);
 void lowBatteryCheck(uint8_t batLvl);
 
+// void makeWAVE();
+void plot_do();
+void graphFrame();
+
 void setup()
 {
   m5stack_begin();
@@ -126,11 +125,10 @@ void setup()
   }
 
   settingsInit();
-
   ky039Init();
   dispInit();
+  // makeWAVE();
   canvas.pushSprite(0, 0);
-  dbPrtln("end of setup");
 }
 
 void loop()
@@ -141,51 +139,130 @@ void loop()
   if (keyCheck())
     settings();
 
+  plot_do();
+
   // vTaskDelay(1);
 }
 
 constexpr uint8_t sensorPin = 1;
-
 void ky039Init()
 {
+  // GPIO 1 : AD 12bit 0 to 4095 value (for 0 to 3.3volts)
   pinMode(sensorPin, ANALOG);
-  // for (int i = 0; i < samp_siz; i++)
-  //   SAMPS[i] = 0;
 }
 
-constexpr unsigned long MEAS_PERIOD_MS = 20; // measuremnt interval msec
-static unsigned long PREV_MEAS_TM = 0;
-static uint32_t READ_VAL = 0;
-static uint32_t N_MEAS = 0;
+constexpr unsigned long AV_PERIOD_MS = 20; // average period
+static unsigned long PREV_AVDATA_TM = 0;
+static uint32_t SENSOR_READ_SUM = 0;
+static uint32_t N_READ = 0;
+
+constexpr int PLOT_SIZ = 240;
+uint16_t PLOT_DATA[PLOT_SIZ] = {0};
+uint16_t PLOT_POS = 0;
+static int DISP_MODE = 0;
+constexpr int DISP_MODE_SIZ = 2;
+const int x_siz = 240;
+const int y_siz = 100;
+// int WAVE[x_siz] = {0};
+
+static int X_MOVE = 0;
+unsigned long PREV_PLOT_TM = 0;
+float PREV_PLOT_MIN = 4096.0;
+float PREV_PLOT_MAX = -1.0;
+
+void plot_do()
+{ //   *** IPS LCD 240x135 px  ***     (y/x)
+  //  0/0------------------------------ 0/239
+  //   | setting and battery status area |
+  //  34                               34/239
+  //  35 ------------------------------35/239
+  //   |           plot area             |
+  //  134/0 --------------- --- ------134/239
+  //
+  constexpr unsigned long PLOT_PERIOD_MS = 60;
+  unsigned long current_tm = millis();
+
+  if (DISP_MODE != 1 || (current_tm - PREV_PLOT_TM < PLOT_PERIOD_MS))
+    return;
+
+  PREV_PLOT_TM = current_tm;
+
+  int y;
+  const int y0 = Y_HEIGHT - 1;
+  const int y0_max_pos = y0 - y_siz + 1;
+
+  canvas.fillRect(0, y0_max_pos - 1, x_siz, y_siz + 1, TFT_BLACK); // clear plot area
+
+  graphFrame(); // draw graph frame
+
+  // search min/max value
+  float max_val = -1.0;
+  float min_val = 4096.0;
+  for (int i = 0; i < PLOT_SIZ; i++)
+  {
+    if (PLOT_DATA[i] > max_val)
+      max_val = (float)PLOT_DATA[i];
+    if (PLOT_DATA[i] < min_val)
+      min_val = (float)PLOT_DATA[i];
+  }
+
+  // auto scale calculation
+  float prev_range = PREV_PLOT_MAX - PREV_PLOT_MIN;
+
+  if (max_val > (PREV_PLOT_MAX + prev_range * 0.25) || max_val < (PREV_PLOT_MAX - prev_range * 0.25))
+    PREV_PLOT_MAX = max_val;
+  else
+    max_val = PREV_PLOT_MAX;
+
+  if (min_val < (PREV_PLOT_MIN - prev_range * 0.25) || min_val > (PREV_PLOT_MIN + prev_range * 0.25))
+    PREV_PLOT_MIN = min_val;
+  else
+    min_val = PREV_PLOT_MIN;
+
+  float range = max_val - min_val;
+  float multiplier = y_siz / (range * 1.4);
+  uint16_t pos = PLOT_POS;
+
+  for (int i = 0; i < PLOT_SIZ; i++)
+  {
+    y = y0 - (PLOT_DATA[(pos + i) % PLOT_SIZ] - min_val + range * 0.2) * multiplier;
+    if ((y >= y0_max_pos) && (y <= y0))
+    {
+      canvas.drawPixel(i, y, TFT_WHITE);
+    }
+  }
+  canvas.pushSprite(0, 0);
+}
 
 void ky039Sensor()
 {
   // calculate an average of the  sensor
   // during a 20 ms period (this will eliminate
   // the 50  Hz noise caused by electric light
-  unsigned long current_meas_tm = millis();
-  READ_VAL += analogRead(sensorPin); // read and add values...
-  N_MEAS++;
+  unsigned long current_read_tm = millis();
+  SENSOR_READ_SUM += analogRead(sensorPin); // read and add values...
+  N_READ++;
 
-  if (current_meas_tm - PREV_MEAS_TM < MEAS_PERIOD_MS)
+  if (current_read_tm - PREV_AVDATA_TM < AV_PERIOD_MS)
     return;
 
-  float avData = (float)READ_VAL / N_MEAS; // and take an average of the values
+  float avData = (float)SENSOR_READ_SUM / N_READ; // and take an average of the values
+  // PLOT_DATA[PLOT_POS++] = (uint16_t)avData;
+  // PLOT_POS %= PLOT_SIZ;
 
-  PREV_MEAS_TM = current_meas_tm;
-  READ_VAL = 0;
-  N_MEAS = 0;
+  PREV_AVDATA_TM = current_read_tm;
+  SENSOR_READ_SUM = 0;
+  N_READ = 0;
 
   calcBeat(avData);
 }
 
-// moving averaging sampling
+// -- moving averaging sampling
 // constexpr int samp_siz = 4;
-// constexpr int samp_siz = 10;
-constexpr int samp_siz = 15;
-// constexpr int samp_siz = 20;
-
-static int samp_pos = 0;            // current position in the array
+constexpr int samp_siz = 10;
+// constexpr int samp_siz = 15;
+// -----------------------------------
+static int samp_pos = 0; // current position in the array
 static float SAMPS[samp_siz] = {0};
 // ---------------------------------------------
 
@@ -194,12 +271,13 @@ static bool isRISING = true;
 static int RISE_CNT = 0;
 static unsigned long PREV_BEAT01 = 0, PREV_BEAT02 = 0;
 static unsigned long PREV_BEAT_TM = 0;
-static float PREV_BPMVAL01 = 0;
-static float PREV_BPMVAL02 = 0;
+static float PREV_BPMVAL01 = 60.0; // defalut 60bpm
+static float PREV_BPMVAL02 = 60.0; // default 60bpm
 
 void calcBeat(float newData)
 {
   constexpr uint8_t rise_threshold = 4;
+  // constexpr uint8_t rise_threshold = 5;
   // constexpr uint8_t rise_threshold = 6;
 
   // Add the  newest measurement to an array
@@ -207,13 +285,14 @@ void calcBeat(float newData)
   // to maintain a sum of last measurements
   SAMPS[samp_pos++] = newData;
   samp_pos %= samp_siz;
-
   // new curve : average of the values in the array
   float sum_val = 0;
   for (int i = 0; i < samp_siz; i++)
     sum_val += SAMPS[i];
   float current_curve = sum_val / samp_siz;
-  Serial.printf(">current_curve:%f\n", current_curve);
+  // Serial.printf(">current_curve:%f\n", current_curve);
+  PLOT_DATA[PLOT_POS++] = (uint16_t)current_curve;
+  PLOT_POS %= PLOT_SIZ;
 
   // check  for a rising curve (= a heart beat)
   if (current_curve > PREV_CURVE)
@@ -232,27 +311,27 @@ void calcBeat(float newData)
       // Calculate the weighed average of heartbeat rate
       // according  to the three last beats
       // bpm : beats per minute
-      float current_bpmVal = 60000. / (0.4 * current_beat + 0.3 * PREV_BEAT01 + 0.3 * PREV_BEAT02);
+      float current_bpmVal = 60000.0 / (0.4 * current_beat + 0.3 * PREV_BEAT01 + 0.3 * PREV_BEAT02);
 
       // *** SELECT VALID DATA ***
-      if (current_curve < 2400.0 || current_curve > 2900.0)  // AD value
-      {// Not the desired data
+      if (current_curve < 2400.0 || current_curve > 2900.0) // AD value
+      {                                                     // Not the desired data
         dbPrtln(" invalid curve value = " + String(current_curve));
         prtBPM(-1.0); // invalid data
       }
-      else if (current_beat < 500.0 || current_beat > 2000.0) // msec
-      { //  500msec period -> 2Hz   -> 120BPM .... invalid data
+      else if (current_beat < 500 || current_beat > 2000) // msec
+      {                                                   //  500msec period -> 2Hz   -> 120BPM .... invalid data
         // 2000msec period -> 0.5Hz ->  30BPM .... invalid data
         dbPrtln(" invalid curve_beat = " + String(current_beat));
         // prtBPM(-1.0); // invalid data
       }
       else if (current_bpmVal < 30.0 || current_bpmVal > 120.0) // bpm
-      { // invalid heart beat bpm .... reject
+      {                                                         // invalid heart beat bpm .... reject
         dbPrtln("invalid bpm value = " + String(current_bpmVal));
         // prtBPM(-1.0); // invalid data
       }
-      else if (abs(current_bpmVal - PREV_BPMVAL01) > 5 || abs(current_bpmVal - PREV_BPMVAL02) > 5)  // bpm
-      { // distributed unevenly value ... not stable
+      else if (abs(current_bpmVal - PREV_BPMVAL01) > 10.0 || abs(current_bpmVal - PREV_BPMVAL02) > 10.0) // bpm
+      {                                                                                                  // distributed unevenly value ... not stable
         dbPrtln(" distributed unevenly bpm value = " + String(current_bpmVal));
         // prtBPM(-1.0); // invalid data
       }
@@ -274,6 +353,39 @@ void calcBeat(float newData)
     RISE_CNT = 0;
   }
   PREV_CURVE = current_curve;
+}
+
+void dispPlotInit()
+{
+  canvas.fillScreen(TFT_BLACK); // all clear
+
+  canvas.setTextColor(TFT_ORANGE, TFT_BLACK);
+  canvas.setFont(&fonts::Font4); // フォント設定
+  canvas.drawString(F("bpm"), X_WIDTH / 2 - 20, 0);
+
+  canvas.setFont(&fonts::lgfxJapanGothic_16);
+  canvas.setTextSize(1);
+
+  // L0 :Battery Level -----
+  dispBatItem();
+  canvas.drawString(F("---"), W_CHR * AppConfig::Layout::BATLVL_VALUE_POS, SC_LINES[0]);
+  canvas.drawString(F("%"), W_CHR * AppConfig::Layout::BATLVL_PERCENT_POS, SC_LINES[0]);
+}
+
+void graphFrame()
+{
+  int x_max = X_WIDTH - 1;
+  int y_max = Y_HEIGHT - 1;
+
+  // draw graph frame
+  canvas.drawLine(0, y_max - y_siz - 1, x_max, y_max - y_siz - 1, TFT_GREEN);
+  canvas.drawLine(x_max - 50, Y_HEIGHT - y_siz, x_max - 50, y_max, TFT_YELLOW);
+  canvas.drawLine(x_max - 2 * 50, Y_HEIGHT - y_siz, x_max - 2 * 50, y_max, TFT_YELLOW);
+  canvas.drawLine(x_max - 3 * 50, Y_HEIGHT - y_siz, x_max - 3 * 50, y_max, TFT_YELLOW);
+  canvas.drawLine(x_max - 4 * 50, Y_HEIGHT - y_siz, x_max - 4 * 50, y_max, TFT_YELLOW);
+
+  canvas.setTextColor(WHITE, BLACK); // 文字色
+  canvas.setFont(&fonts::Font4);     // フォント設定
 }
 
 constexpr int BPM_FONT_SIZE = 48;
@@ -302,11 +414,21 @@ void prtBPM(float temp_val)
 
   canvas.setTextColor(TFT_WHITE, TFT_BLACK);
   canvas.setFont(&fonts::Font7);
-  canvas.setTextSize(1);
-  canvas.fillRect(0, SC_LINES[BPM_LINE_INDEX], X_WIDTH, BPM_FONT_SIZE, TFT_BLACK);
-  canvas.drawCenterString(buf, X_WIDTH / 2, SC_LINES[BPM_LINE_INDEX]);
+  if (DISP_MODE == 1)
+  { // for plot disp mode
+    canvas.fillRect(0, 0, 80, 34, TFT_BLACK);
+    canvas.setTextSize(0.70);
+    canvas.drawString(buf, 0, 0);
+  }
+  else
+  { // for normal disp mode
+    canvas.fillRect(0, SC_LINES[BPM_LINE_INDEX], X_WIDTH, BPM_FONT_SIZE, TFT_BLACK);
+    canvas.setTextSize(1);
+    canvas.drawCenterString(buf, X_WIDTH / 2, SC_LINES[BPM_LINE_INDEX]);
+  }
   canvas.pushSprite(0, 0);
 }
+
 // ************************************************************************************
 
 void dispInit()
@@ -319,7 +441,7 @@ void dispInit()
   // L4:
   // L5:
   // L6:
-  // L7:  Distance                cm
+  // L7:  Pusle Rate         bpm
   // ---012345678901234567890123456789----
 
   canvas.fillScreen(TFT_BLACK); // all clear
@@ -380,6 +502,23 @@ void settings()
       return;
     settingMode = SM_LANG;
   }
+  else if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_DISP))
+  {
+    DISP_MODE = (DISP_MODE + 1) % DISP_MODE_SIZ;
+    switch (DISP_MODE)
+    {
+    case 0: // normal mode
+      dispInit();
+      break;
+    case 1: // graph mode
+      dispPlotInit();
+      break;
+    default:
+      return;
+    }
+    canvas.pushSprite(0, 0);
+    return;
+  }
   else
   {
     // Part 2: Handle value adjustments for the current mode.
@@ -431,6 +570,9 @@ void changeSettings(SettingMode mode, KeyNum keyNo)
   case SM_LANG:
     changeLang(keyNo);
     break;
+  // case SM_DISP:
+  //   changeDisp();
+  //   break;
   default:
     return;
   }
