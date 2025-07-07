@@ -179,19 +179,20 @@ void plot_do()
   //   |           plot area             |
   //  134/0 --------------- --- ------134/239
   //
-  constexpr unsigned long PLOT_PERIOD_MS = 60;
+  constexpr unsigned long PLOT_PERIOD_MS = 33;  // 30 fps  1000mSec/30= 33.3mSec
   unsigned long current_tm = millis();
 
   if (DISP_MODE != 1 || (current_tm - PREV_PLOT_TM < PLOT_PERIOD_MS))
     return;
 
   PREV_PLOT_TM = current_tm;
+  uint16_t cPlotPos = PLOT_POS;
 
   int y;
-  const int y0 = Y_HEIGHT - 1;
-  const int y0_max_pos = y0 - y_siz + 1;
+  const int y0_pos = Y_HEIGHT - 1;            // origin y-axis disp position   -> 134
+  const int ymax_pos = y0_pos - y_siz + 1;    // max y-axis disp position      ->  35
 
-  canvas.fillRect(0, y0_max_pos - 1, x_siz, y_siz + 1, TFT_BLACK); // clear plot area
+  canvas.fillRect(0, ymax_pos - 1, x_siz, y_siz + 1, TFT_BLACK); // clear plot area
 
   graphFrame(); // draw graph frame
 
@@ -221,12 +222,12 @@ void plot_do()
 
   float range = max_val - min_val;
   float multiplier = y_siz / (range * 1.4);
-  uint16_t pos = PLOT_POS;
+  
 
   for (int i = 0; i < PLOT_SIZ; i++)
   {
-    y = y0 - (PLOT_DATA[(pos + i) % PLOT_SIZ] - min_val + range * 0.2) * multiplier;
-    if ((y >= y0_max_pos) && (y <= y0))
+    y = y0_pos - (PLOT_DATA[(cPlotPos + i) % PLOT_SIZ] - min_val + range * 0.2) * multiplier;
+    if ((y >= ymax_pos) && (y <= y0_pos))
     {
       canvas.drawPixel(i, y, TFT_WHITE);
     }
@@ -247,25 +248,21 @@ void ky039Sensor()
     return;
 
   float avData = (float)SENSOR_READ_SUM / N_READ; // and take an average of the values
-  // PLOT_DATA[PLOT_POS++] = (uint16_t)avData;
-  // PLOT_POS %= PLOT_SIZ;
-
   PREV_AVDATA_TM = current_read_tm;
   SENSOR_READ_SUM = 0;
   N_READ = 0;
-
   calcBeat(avData);
 }
 
 // -- moving averaging sampling
 // constexpr int samp_siz = 4;
-constexpr int samp_siz = 10;
+constexpr int samp_siz = 6;
+// constexpr int samp_siz = 10;
 // constexpr int samp_siz = 15;
 // -----------------------------------
 static int samp_pos = 0; // current position in the array
 static float SAMPS[samp_siz] = {0};
 // ---------------------------------------------
-
 static float PREV_CURVE = 4096.0; // impossible value
 static bool isRISING = true;
 static int RISE_CNT = 0;
@@ -290,7 +287,9 @@ void calcBeat(float newData)
   for (int i = 0; i < samp_siz; i++)
     sum_val += SAMPS[i];
   float current_curve = sum_val / samp_siz;
-  // Serial.printf(">current_curve:%f\n", current_curve);
+  
+  // *** Plot data ***
+  Serial.printf(">current_curve:%f\n", current_curve);
   PLOT_DATA[PLOT_POS++] = (uint16_t)current_curve;
   PLOT_POS %= PLOT_SIZ;
 
@@ -333,7 +332,7 @@ void calcBeat(float newData)
       else if (abs(current_bpmVal - PREV_BPMVAL01) > 10.0 || abs(current_bpmVal - PREV_BPMVAL02) > 10.0) // bpm
       {                                                                                                  // distributed unevenly value ... not stable
         dbPrtln(" distributed unevenly bpm value = " + String(current_bpmVal));
-        // prtBPM(-1.0); // invalid data
+        prtBPM(-1.0); // invalid data
       }
       else
       {
@@ -358,16 +357,17 @@ void calcBeat(float newData)
 void dispPlotInit()
 {
   canvas.fillScreen(TFT_BLACK); // all clear
-
-  canvas.setTextColor(TFT_ORANGE, TFT_BLACK);
-  canvas.setFont(&fonts::Font4); // フォント設定
-  canvas.drawString(F("bpm"), X_WIDTH / 2 - 20, 0);
-
   canvas.setFont(&fonts::lgfxJapanGothic_16);
-  canvas.setTextSize(1);
+  
+  // L0 :meas unit -----
+  canvas.setTextSize(1.2);
+  canvas.setTextColor(TFT_ORANGE, TFT_BLACK);
+  canvas.drawString(F("bpm"), X_WIDTH / 2 - 15, 0);
 
   // L0 :Battery Level -----
+  canvas.setTextSize(1);
   dispBatItem();
+  // canvas.setTextColor(TFT_WHITE, TFT_BLACK);
   canvas.drawString(F("---"), W_CHR * AppConfig::Layout::BATLVL_VALUE_POS, SC_LINES[0]);
   canvas.drawString(F("%"), W_CHR * AppConfig::Layout::BATLVL_PERCENT_POS, SC_LINES[0]);
 }
@@ -377,15 +377,14 @@ void graphFrame()
   int x_max = X_WIDTH - 1;
   int y_max = Y_HEIGHT - 1;
 
-  // draw graph frame
-  canvas.drawLine(0, y_max - y_siz - 1, x_max, y_max - y_siz - 1, TFT_GREEN);
-  canvas.drawLine(x_max - 50, Y_HEIGHT - y_siz, x_max - 50, y_max, TFT_YELLOW);
-  canvas.drawLine(x_max - 2 * 50, Y_HEIGHT - y_siz, x_max - 2 * 50, y_max, TFT_YELLOW);
-  canvas.drawLine(x_max - 3 * 50, Y_HEIGHT - y_siz, x_max - 3 * 50, y_max, TFT_YELLOW);
-  canvas.drawLine(x_max - 4 * 50, Y_HEIGHT - y_siz, x_max - 4 * 50, y_max, TFT_YELLOW);
-
-  canvas.setTextColor(WHITE, BLACK); // 文字色
-  canvas.setFont(&fonts::Font4);     // フォント設定
+  // draw graph upper limit frame
+  canvas.drawLine(0, y_max - y_siz - 1, x_max, y_max - y_siz - 1, TFT_DARKGREY);
+  
+  //   1-2-3-4 sec time frame
+  canvas.drawLine(x_max - 50, Y_HEIGHT - y_siz, x_max - 50, y_max, TFT_DARKCYAN);
+  canvas.drawLine(x_max - 2 * 50, Y_HEIGHT - y_siz, x_max - 2 * 50, y_max, TFT_DARKCYAN);
+  canvas.drawLine(x_max - 3 * 50, Y_HEIGHT - y_siz, x_max - 3 * 50, y_max, TFT_DARKCYAN);
+  canvas.drawLine(x_max - 4 * 50, Y_HEIGHT - y_siz, x_max - 4 * 50, y_max, TFT_DARKCYAN);
 }
 
 constexpr int BPM_FONT_SIZE = 48;
@@ -412,16 +411,23 @@ void prtBPM(float temp_val)
     snprintf(buf, sizeof(buf), "%3.1f", temp_val);
   }
 
-  canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  canvas.setFont(&fonts::Font7);
+  
+  
   if (DISP_MODE == 1)
   { // for plot disp mode
-    canvas.fillRect(0, 0, 100, 34, TFT_BLACK);
-    canvas.setTextSize(0.70);
-    canvas.drawString(buf, 0, 0);
+    if(settingMode != SM_ESC )
+      return;
+
+    canvas.setFont(&fonts::Font7);
+    canvas.setTextColor(TFT_SKYBLUE, TFT_BLACK);
+    canvas.fillRect(0, 0, X_WIDTH / 2 - 24, 34, TFT_BLACK);
+    canvas.setTextSize(0.60);
+    canvas.drawRightString(buf, X_WIDTH / 2 - 25, 0);
   }
   else
   { // for normal disp mode
+    canvas.setFont(&fonts::Font7);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
     canvas.fillRect(0, SC_LINES[BPM_LINE_INDEX], X_WIDTH, BPM_FONT_SIZE, TFT_BLACK);
     canvas.setTextSize(1);
     canvas.drawCenterString(buf, X_WIDTH / 2, SC_LINES[BPM_LINE_INDEX]);
@@ -446,6 +452,7 @@ void dispInit()
 
   canvas.fillScreen(TFT_BLACK); // all clear
   canvas.setFont(&fonts::lgfxJapanGothic_16);
+  canvas.setTextSize(1);
 
   //--L0 : title--------------
   canvas.setTextColor(TFT_SKYBLUE, TFT_BLACK);
