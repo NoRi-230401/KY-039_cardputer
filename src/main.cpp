@@ -1,7 +1,7 @@
 // --------------------------------------------------------
 //  *** KY-039_cardputer ***     by NoRi
 //  KY=039 Heart beat Senseor software for Cardputer
-//    2025-07-03  v101
+//    2025-07-08  v103
 // https://github.com/NoRi-230401/KY-039_cardputer
 //  MIT License
 // --------------------------------------------------------
@@ -29,7 +29,7 @@ enum DispMode
   DISP_BPM,
   DISP_PLOT
 };
-static uint8_t dispMode = DISP_BPM;
+static uint8_t dispMode = DISP_PLOT;
 constexpr int dispMode_SIZ = 2;
 
 namespace AppConfig
@@ -95,12 +95,15 @@ const char *meas_items[] = {"Pulse Rate", "脈拍"};
 
 void setup();
 void loop();
-void ky039Sensor();
 void ky039Init();
+void plot_do();
+void ky039Sensor();
 void calcBeat(float newData);
+void dispPlotMode();
+void graphFrame();
 void prtBPM(float temp_val, int dispMode);
-void dispPlotInit();
-void dispInit();
+void dispInit(int mode);
+void dispBpmMode();
 bool keyCheck();
 void settings();
 void changeSettings(SettingMode mode, KeyNum keyNo);
@@ -117,8 +120,6 @@ void settingsInit();
 void batteryState();
 void prtBatLvl(uint8_t batLvl);
 void lowBatteryCheck(uint8_t batLvl);
-void plot_do();
-void graphFrame();
 
 void setup()
 {
@@ -132,7 +133,7 @@ void setup()
 
   settingsInit();
   ky039Init();
-  dispInit();
+  dispInit(DISP_PLOT);
   canvas.pushSprite(0, 0);
 }
 
@@ -144,7 +145,7 @@ void loop()
   if (keyCheck())
     settings();
 
-  if(dispMode == DISP_PLOT)  
+  if (dispMode == DISP_PLOT)
     plot_do();
 
   // vTaskDelay(1);
@@ -174,7 +175,8 @@ float PREV_PLOT_MIN = 4096.0;
 float PREV_PLOT_MAX = -1.0;
 
 void plot_do()
-{ //   *** IPS LCD 240x135 px  ***     (y/x)
+{ // **** plot wave data of heart beating ****
+  //   :  IPS LCD 240x135 px            (y/x)
   //  0/0------------------------------ 0/239
   //   |   BPM                    batlvl |
   //  34                               34/239
@@ -182,20 +184,19 @@ void plot_do()
   //   |           plot area             |
   //  134/0 --------------- --- ------134/239
   //
-  constexpr unsigned long PLOT_PERIOD_MS = 33; // 30 fps  1000mSec/30= 33.3mSec
   unsigned long current_tm = millis();
+  constexpr unsigned long PLOT_PERIOD_MS = 33; // 30 fps  1000mSec/30= 33.3mSec
 
   if (current_tm - PREV_PLOT_TM < PLOT_PERIOD_MS)
     return;
 
-  PREV_PLOT_TM = current_tm;
   uint16_t cPlotPos = WAVE_POS;
-
+  PREV_PLOT_TM = current_tm;
   const int y0_pos = Y_HEIGHT - 1;             // origin y-axis disp position   -> 134
   const int ymax_pos = y0_pos - plotY_siz + 1; // max y-axis disp position      ->  35
 
   canvas.fillRect(0, ymax_pos - 1, plotX_siz, plotY_siz + 1, TFT_BLACK); // clear plot area
-  graphFrame(); // draw plot graph frame
+  graphFrame();                                                          // draw frame
 
   // search min/max value
   float max_val = -1.0;
@@ -221,15 +222,15 @@ void plot_do()
     min_val = PREV_PLOT_MIN;
 
   float range = max_val - min_val;
-  range = range * 1.4;
-  max_val += range * 0.2;
-  min_val -= range * 0.2;
+  float top_pos = max_val + range * 0.2;
+  float bottom_pos = min_val - range * 0.2;
+  range = top_pos - bottom_pos;
   float multiplier = plotY_siz / range;
 
   for (int i = 0; i < WAVE_SIZ; i++)
   {
-    // *** wave data is converted to disp area ... auto scale ***
-    float y_float = (float)y0_pos - (WAVE_DATA[(cPlotPos + i) % WAVE_SIZ] - min_val) * multiplier;
+    // *** wave data is converted to real LCD disp area  ***
+    float y_float = (float)y0_pos - (WAVE_DATA[(cPlotPos + i) % WAVE_SIZ] - bottom_pos) * multiplier;
     int32_t y = (int32_t)(y_float); // round down
     if ((y >= ymax_pos) && (y <= y0_pos))
     {
@@ -317,14 +318,14 @@ void calcBeat(float newData)
 
       // *** SELECT VALID DATA ***
       if (current_wave < 2400.0 || current_wave > 2900.0) // AD value
-      { 
+      {
         // Not the desired data
         dbPrtln(" invalid curve value = " + String(current_wave));
         prtBPM(-1.0, dispMode); // invalid data
         canvas.pushSprite(0, 0);
       }
       else if (current_beat < 500 || current_beat > 2000) // msec
-      {                                                   
+      {
         //  500msec period -> 2Hz   -> 120BPM .... invalid data
         // 2000msec period -> 0.5Hz ->  30BPM .... invalid data
         dbPrtln(" invalid curve_beat = " + String(current_beat));
@@ -360,7 +361,7 @@ void calcBeat(float newData)
   PREV_WAVE = current_wave;
 }
 
-void dispPlotInit()
+void dispPlotMode()
 {
   canvas.fillScreen(TFT_BLACK); // all clear
 
@@ -449,7 +450,22 @@ void prtBPM(float temp_val, int dispMode)
 
 // ************************************************************************************
 
-void dispInit()
+void dispInit(int mode)
+{
+  switch (mode)
+  {
+  case DISP_BPM:
+    dispBpmMode();
+    break;
+  case DISP_PLOT:
+    dispPlotMode();
+    break;
+  default:
+    return;
+  }
+}
+
+void dispBpmMode()
 {
   // ---012345678901234567890123456789----
   // L0:- HC-SR04 Sensor -    bat.---%
@@ -529,18 +545,7 @@ void settings()
   else if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_DISP))
   {
     dispMode = (dispMode + 1) % dispMode_SIZ;
-
-    switch (dispMode)
-    {
-    case DISP_BPM: // BPN number disp mode
-      dispInit();
-      break;
-    case DISP_PLOT: // plot graph mode
-      dispPlotInit();
-      break;
-    default:
-      return;
-    }
+    dispInit(dispMode);
     canvas.pushSprite(0, 0);
     return;
   }
