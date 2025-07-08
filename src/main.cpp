@@ -24,6 +24,14 @@ enum SettingMode
 };
 static SettingMode settingMode = SM_ESC;
 
+enum DispMode
+{
+  DISP_BPM,
+  DISP_PLOT
+};
+static uint8_t dispMode = DISP_BPM;
+constexpr int dispMode_SIZ = 2;
+
 namespace AppConfig
 {
   // Brightness settings
@@ -58,7 +66,7 @@ namespace AppConfig
     constexpr int BATLVL_VALUE_LEN = 3;
     constexpr int BATLVL_PERCENT_POS = 29;
     constexpr int SETTING_DISP_POS = 2;
-    constexpr int MEAS_UNIT_POS = 21;
+    constexpr int MEAS_UNIT_POS = 28;
     constexpr int MEAS_ITEM_POS = 2;
     constexpr int MEAS_ITEM_FONT_SIZE = 24;
   }
@@ -90,7 +98,7 @@ void loop();
 void ky039Sensor();
 void ky039Init();
 void calcBeat(float newData);
-void prtBPM(float temp_val);
+void prtBPM(float temp_val, int dispMode);
 void dispPlotInit();
 void dispInit();
 bool keyCheck();
@@ -109,8 +117,6 @@ void settingsInit();
 void batteryState();
 void prtBatLvl(uint8_t batLvl);
 void lowBatteryCheck(uint8_t batLvl);
-
-// void makeWAVE();
 void plot_do();
 void graphFrame();
 
@@ -127,7 +133,6 @@ void setup()
   settingsInit();
   ky039Init();
   dispInit();
-  // makeWAVE();
   canvas.pushSprite(0, 0);
 }
 
@@ -139,7 +144,8 @@ void loop()
   if (keyCheck())
     settings();
 
-  plot_do();
+  if(dispMode == DISP_PLOT)  
+    plot_do();
 
   // vTaskDelay(1);
 }
@@ -153,17 +159,14 @@ void ky039Init()
 
 constexpr unsigned long AV_PERIOD_MS = 20; // average period
 static unsigned long PREV_AVDATA_TM = 0;
-static uint32_t SENSOR_READ_SUM = 0;
-static uint32_t N_READ = 0;
+static uint64_t SENSOR_READ_SUM = 0;
+static uint64_t N_READ = 0;
 
-constexpr int PLOT_SIZ = 240;
-uint16_t PLOT_DATA[PLOT_SIZ] = {0};
-uint16_t PLOT_POS = 0;
-static int DISP_MODE = 0;
-constexpr int DISP_MODE_SIZ = 2;
-const int x_siz = 240;
-const int y_siz = 100;
-// int WAVE[x_siz] = {0};
+constexpr int WAVE_SIZ = 240;
+static float WAVE_DATA[WAVE_SIZ] = {0};
+uint16_t WAVE_POS = 0;
+constexpr int plotX_siz = 240;
+constexpr int plotY_siz = 100;
 
 static int X_MOVE = 0;
 unsigned long PREV_PLOT_TM = 0;
@@ -173,60 +176,61 @@ float PREV_PLOT_MAX = -1.0;
 void plot_do()
 { //   *** IPS LCD 240x135 px  ***     (y/x)
   //  0/0------------------------------ 0/239
-  //   | setting and battery status area |
+  //   |   BPM                    batlvl |
   //  34                               34/239
   //  35 ------------------------------35/239
   //   |           plot area             |
   //  134/0 --------------- --- ------134/239
   //
-  constexpr unsigned long PLOT_PERIOD_MS = 33;  // 30 fps  1000mSec/30= 33.3mSec
+  constexpr unsigned long PLOT_PERIOD_MS = 33; // 30 fps  1000mSec/30= 33.3mSec
   unsigned long current_tm = millis();
 
-  if (DISP_MODE != 1 || (current_tm - PREV_PLOT_TM < PLOT_PERIOD_MS))
+  if (current_tm - PREV_PLOT_TM < PLOT_PERIOD_MS)
     return;
 
   PREV_PLOT_TM = current_tm;
-  uint16_t cPlotPos = PLOT_POS;
+  uint16_t cPlotPos = WAVE_POS;
 
-  int y;
-  const int y0_pos = Y_HEIGHT - 1;            // origin y-axis disp position   -> 134
-  const int ymax_pos = y0_pos - y_siz + 1;    // max y-axis disp position      ->  35
+  const int y0_pos = Y_HEIGHT - 1;             // origin y-axis disp position   -> 134
+  const int ymax_pos = y0_pos - plotY_siz + 1; // max y-axis disp position      ->  35
 
-  canvas.fillRect(0, ymax_pos - 1, x_siz, y_siz + 1, TFT_BLACK); // clear plot area
-
-  graphFrame(); // draw graph frame
+  canvas.fillRect(0, ymax_pos - 1, plotX_siz, plotY_siz + 1, TFT_BLACK); // clear plot area
+  graphFrame(); // draw plot graph frame
 
   // search min/max value
   float max_val = -1.0;
   float min_val = 4096.0;
-  for (int i = 0; i < PLOT_SIZ; i++)
+  for (int i = 0; i < WAVE_SIZ; i++)
   {
-    if (PLOT_DATA[i] > max_val)
-      max_val = (float)PLOT_DATA[i];
-    if (PLOT_DATA[i] < min_val)
-      min_val = (float)PLOT_DATA[i];
+    if (WAVE_DATA[i] > max_val)
+      max_val = WAVE_DATA[i];
+    if (WAVE_DATA[i] < min_val)
+      min_val = WAVE_DATA[i];
   }
 
   // auto scale calculation
   float prev_range = PREV_PLOT_MAX - PREV_PLOT_MIN;
-
-  if (max_val > (PREV_PLOT_MAX + prev_range * 0.25) || max_val < (PREV_PLOT_MAX - prev_range * 0.25))
+  if (max_val > (PREV_PLOT_MAX + prev_range * 0.3) || max_val < (PREV_PLOT_MAX - prev_range * 0.3))
     PREV_PLOT_MAX = max_val;
   else
     max_val = PREV_PLOT_MAX;
 
-  if (min_val < (PREV_PLOT_MIN - prev_range * 0.25) || min_val > (PREV_PLOT_MIN + prev_range * 0.25))
+  if (min_val < (PREV_PLOT_MIN - prev_range * 0.3) || min_val > (PREV_PLOT_MIN + prev_range * 0.3))
     PREV_PLOT_MIN = min_val;
   else
     min_val = PREV_PLOT_MIN;
 
   float range = max_val - min_val;
-  float multiplier = y_siz / (range * 1.4);
-  
+  range = range * 1.4;
+  max_val += range * 0.2;
+  min_val -= range * 0.2;
+  float multiplier = plotY_siz / range;
 
-  for (int i = 0; i < PLOT_SIZ; i++)
+  for (int i = 0; i < WAVE_SIZ; i++)
   {
-    y = y0_pos - (PLOT_DATA[(cPlotPos + i) % PLOT_SIZ] - min_val + range * 0.2) * multiplier;
+    // *** wave data is converted to disp area ... auto scale ***
+    float y_float = (float)y0_pos - (WAVE_DATA[(cPlotPos + i) % WAVE_SIZ] - min_val) * multiplier;
+    int32_t y = (int32_t)(y_float); // round down
     if ((y >= ymax_pos) && (y <= y0_pos))
     {
       canvas.drawPixel(i, y, TFT_WHITE);
@@ -256,14 +260,13 @@ void ky039Sensor()
 
 // -- moving averaging sampling
 // constexpr int samp_siz = 4;
-constexpr int samp_siz = 6;
-// constexpr int samp_siz = 10;
-// constexpr int samp_siz = 15;
+constexpr int samp_siz = 5;
+// constexpr int samp_siz = 6;
 // -----------------------------------
 static int samp_pos = 0; // current position in the array
 static float SAMPS[samp_siz] = {0};
 // ---------------------------------------------
-static float PREV_CURVE = 4096.0; // impossible value
+static float PREV_WAVE = 4096.0; // impossible value
 static bool isRISING = true;
 static int RISE_CNT = 0;
 static unsigned long PREV_BEAT01 = 0, PREV_BEAT02 = 0;
@@ -286,15 +289,15 @@ void calcBeat(float newData)
   float sum_val = 0;
   for (int i = 0; i < samp_siz; i++)
     sum_val += SAMPS[i];
-  float current_curve = sum_val / samp_siz;
-  
+  float current_wave = sum_val / samp_siz;
+
   // *** Plot data ***
-  Serial.printf(">current_curve:%f\n", current_curve);
-  PLOT_DATA[PLOT_POS++] = (uint16_t)current_curve;
-  PLOT_POS %= PLOT_SIZ;
+  // Serial.printf(">current_curve:%f\n", current_curve);
+  WAVE_DATA[WAVE_POS++] = current_wave;
+  WAVE_POS %= WAVE_SIZ;
 
   // check  for a rising curve (= a heart beat)
-  if (current_curve > PREV_CURVE)
+  if (current_wave > PREV_WAVE)
   {
     RISE_CNT++;
     if (!isRISING && RISE_CNT > rise_threshold)
@@ -313,30 +316,33 @@ void calcBeat(float newData)
       float current_bpmVal = 60000.0 / (0.4 * current_beat + 0.3 * PREV_BEAT01 + 0.3 * PREV_BEAT02);
 
       // *** SELECT VALID DATA ***
-      if (current_curve < 2400.0 || current_curve > 2900.0) // AD value
-      {                                                     // Not the desired data
-        dbPrtln(" invalid curve value = " + String(current_curve));
-        prtBPM(-1.0); // invalid data
+      if (current_wave < 2400.0 || current_wave > 2900.0) // AD value
+      { 
+        // Not the desired data
+        dbPrtln(" invalid curve value = " + String(current_wave));
+        prtBPM(-1.0, dispMode); // invalid data
+        canvas.pushSprite(0, 0);
       }
       else if (current_beat < 500 || current_beat > 2000) // msec
-      {                                                   //  500msec period -> 2Hz   -> 120BPM .... invalid data
+      {                                                   
+        //  500msec period -> 2Hz   -> 120BPM .... invalid data
         // 2000msec period -> 0.5Hz ->  30BPM .... invalid data
         dbPrtln(" invalid curve_beat = " + String(current_beat));
-        // prtBPM(-1.0); // invalid data
       }
       else if (current_bpmVal < 30.0 || current_bpmVal > 120.0) // bpm
-      {                                                         // invalid heart beat bpm .... reject
+      {
+        // invalid heart beat bpm .... reject
         dbPrtln("invalid bpm value = " + String(current_bpmVal));
-        // prtBPM(-1.0); // invalid data
       }
       else if (abs(current_bpmVal - PREV_BPMVAL01) > 10.0 || abs(current_bpmVal - PREV_BPMVAL02) > 10.0) // bpm
-      {                                                                                                  // distributed unevenly value ... not stable
+      {
+        // distributed unevenly value ... not stable
         dbPrtln(" distributed unevenly bpm value = " + String(current_bpmVal));
-        prtBPM(-1.0); // invalid data
       }
       else
       {
-        prtBPM(current_bpmVal);
+        prtBPM(current_bpmVal, dispMode);
+        canvas.pushSprite(0, 0);
       }
       PREV_BPMVAL02 = PREV_BPMVAL01;
       PREV_BPMVAL01 = current_bpmVal;
@@ -351,23 +357,27 @@ void calcBeat(float newData)
     isRISING = false;
     RISE_CNT = 0;
   }
-  PREV_CURVE = current_curve;
+  PREV_WAVE = current_wave;
 }
 
 void dispPlotInit()
 {
   canvas.fillScreen(TFT_BLACK); // all clear
-  canvas.setFont(&fonts::lgfxJapanGothic_16);
-  
-  // L0 :meas unit -----
-  canvas.setTextSize(1.2);
+
+  // BPM meas value '---.-'
+  prtBPM(-1.0, DISP_PLOT);
+
+  // meas unit -----
+  canvas.setFont(&fonts::Font4);
+  canvas.setTextSize(0.8);
   canvas.setTextColor(TFT_ORANGE, TFT_BLACK);
   canvas.drawString(F("bpm"), X_WIDTH / 2 - 15, 0);
 
   // L0 :Battery Level -----
+  canvas.setFont(&fonts::lgfxJapanGothic_16);
   canvas.setTextSize(1);
   dispBatItem();
-  // canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  canvas.setTextColor(TFT_WHITE, TFT_BLACK);
   canvas.drawString(F("---"), W_CHR * AppConfig::Layout::BATLVL_VALUE_POS, SC_LINES[0]);
   canvas.drawString(F("%"), W_CHR * AppConfig::Layout::BATLVL_PERCENT_POS, SC_LINES[0]);
 }
@@ -378,28 +388,28 @@ void graphFrame()
   int y_max = Y_HEIGHT - 1;
 
   // draw graph upper limit frame
-  canvas.drawLine(0, y_max - y_siz - 1, x_max, y_max - y_siz - 1, TFT_DARKGREY);
-  
+  canvas.drawLine(0, y_max - plotY_siz - 1, x_max, y_max - plotY_siz - 1, TFT_DARKGREY);
+
   //   1-2-3-4 sec time frame
-  canvas.drawLine(x_max - 50, Y_HEIGHT - y_siz, x_max - 50, y_max, TFT_DARKCYAN);
-  canvas.drawLine(x_max - 2 * 50, Y_HEIGHT - y_siz, x_max - 2 * 50, y_max, TFT_DARKCYAN);
-  canvas.drawLine(x_max - 3 * 50, Y_HEIGHT - y_siz, x_max - 3 * 50, y_max, TFT_DARKCYAN);
-  canvas.drawLine(x_max - 4 * 50, Y_HEIGHT - y_siz, x_max - 4 * 50, y_max, TFT_DARKCYAN);
+  canvas.drawLine(x_max - 50, Y_HEIGHT - plotY_siz, x_max - 50, y_max, TFT_DARKCYAN);
+  canvas.drawLine(x_max - 2 * 50, Y_HEIGHT - plotY_siz, x_max - 2 * 50, y_max, TFT_DARKCYAN);
+  canvas.drawLine(x_max - 3 * 50, Y_HEIGHT - plotY_siz, x_max - 3 * 50, y_max, TFT_DARKCYAN);
+  canvas.drawLine(x_max - 4 * 50, Y_HEIGHT - plotY_siz, x_max - 4 * 50, y_max, TFT_DARKCYAN);
 }
 
 constexpr int BPM_FONT_SIZE = 48;
 constexpr int BPM_LINE_INDEX = 3;
 constexpr int BPM_DISP_WIDTH = 27;
 static float PREV_BPM_DISP = 0.0;
-void prtBPM(float temp_val)
+void prtBPM(float temp_val, int dispMode)
 {
   // Skip redrawing if the value hasn't changed.
   // This handles both number-to-number and NAN-to-NAN comparisons.
-  if (PREV_BPM_DISP == temp_val || (isnan(PREV_BPM_DISP) && isnan(temp_val)))
-  {
-    return;
-  }
-  PREV_BPM_DISP = temp_val;
+  // if (PREV_BPM_DISP == temp_val || (isnan(PREV_BPM_DISP) && isnan(temp_val)))
+  // {
+  //   return;
+  // }
+  // PREV_BPM_DISP = temp_val;
 
   char buf[10];
   if (isnan(temp_val) || temp_val < 0)
@@ -411,28 +421,30 @@ void prtBPM(float temp_val)
     snprintf(buf, sizeof(buf), "%3.1f", temp_val);
   }
 
-  
-  
-  if (DISP_MODE == 1)
-  { // for plot disp mode
-    if(settingMode != SM_ESC )
+  switch (dispMode)
+  {
+  case DISP_BPM:
+    canvas.fillRect(0, SC_LINES[BPM_LINE_INDEX], X_WIDTH, BPM_FONT_SIZE, TFT_BLACK); // clear
+    canvas.setFont(&fonts::Font7);
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    canvas.drawRightString(buf, X_WIDTH / 2 + 64, SC_LINES[BPM_LINE_INDEX]);
+    break;
+
+  case DISP_PLOT:
+    if (settingMode != SM_ESC)
       return;
 
+    canvas.fillRect(0, 0, X_WIDTH / 2 - 24, 34, TFT_BLACK); // clear
     canvas.setFont(&fonts::Font7);
-    canvas.setTextColor(TFT_SKYBLUE, TFT_BLACK);
-    canvas.fillRect(0, 0, X_WIDTH / 2 - 24, 34, TFT_BLACK);
     canvas.setTextSize(0.60);
+    canvas.setTextColor(TFT_SKYBLUE, TFT_BLACK);
     canvas.drawRightString(buf, X_WIDTH / 2 - 25, 0);
+    break;
+
+  default:
+    return;
   }
-  else
-  { // for normal disp mode
-    canvas.setFont(&fonts::Font7);
-    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    canvas.fillRect(0, SC_LINES[BPM_LINE_INDEX], X_WIDTH, BPM_FONT_SIZE, TFT_BLACK);
-    canvas.setTextSize(1);
-    canvas.drawCenterString(buf, X_WIDTH / 2, SC_LINES[BPM_LINE_INDEX]);
-  }
-  canvas.pushSprite(0, 0);
 }
 
 // ************************************************************************************
@@ -464,9 +476,14 @@ void dispInit()
   canvas.drawString(F("%"), W_CHR * AppConfig::Layout::BATLVL_PERCENT_POS, SC_LINES[0]);
 
   // L7 : Measuremnt items
-  canvas.setTextColor(TFT_GREEN, TFT_BLACK);
-  canvas.drawString(F("bpm"), W_CHR * AppConfig::Layout::MEAS_UNIT_POS, SC_LINES[7], &fonts::Font4);
+  canvas.setTextColor(TFT_ORANGE, TFT_BLACK);
+  canvas.setFont(&fonts::Font4);
+  canvas.setTextSize(1);
+  canvas.drawRightString(F("bpm"), W_CHR * AppConfig::Layout::MEAS_UNIT_POS, SC_LINES[7]);
   dispMeasItem();
+
+  // meas value
+  prtBPM(-1.0, DISP_BPM);
 }
 
 bool keyCheck()
@@ -511,13 +528,14 @@ void settings()
   }
   else if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_DISP))
   {
-    DISP_MODE = (DISP_MODE + 1) % DISP_MODE_SIZ;
-    switch (DISP_MODE)
+    dispMode = (dispMode + 1) % dispMode_SIZ;
+
+    switch (dispMode)
     {
-    case 0: // normal mode
+    case DISP_BPM: // BPN number disp mode
       dispInit();
       break;
-    case 1: // graph mode
+    case DISP_PLOT: // plot graph mode
       dispPlotInit();
       break;
     default:
@@ -631,7 +649,7 @@ void dispMeasItem()
   canvas.fillRect(0, SC_LINES[7], W_CHR * AppConfig::Layout::MEAS_ITEM_POS + width, AppConfig::Layout::MEAS_ITEM_FONT_SIZE, TFT_BLACK);
 
   // measuremt items
-  canvas.setTextColor(TFT_ORANGE, TFT_BLACK);
+  canvas.setTextColor(TFT_GREEN, TFT_BLACK);
   canvas.drawString(meas_items[LANG_INDEX], W_CHR * AppConfig::Layout::MEAS_ITEM_POS, SC_LINES[7]);
 }
 
