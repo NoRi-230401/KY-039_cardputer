@@ -1,36 +1,41 @@
 // --------------------------------------------------------
 //  *** KY-039_cardputer ***     by NoRi
 //  KY=039 Heart beat Senseor software for Cardputer
-//    2025-07-08  v103
+//    2025-07-08  v104
 // https://github.com/NoRi-230401/KY-039_cardputer
 //  MIT License
 // --------------------------------------------------------
 #include "N_util.h"
-enum KeyNum
+
+enum class KeyNum
 {
-  KN_NONE,
-  KN_UP,
-  KN_DOWN,
-  KN_LEFT,
-  KN_RIGHT
+  None,
+  Up,
+  Down,
+  Left,
+  Right,
+  SettingEscape,
+  SettingBrightness,
+  SettingLowBat,
+  SettingLang,
+  SettingDisp
 };
 
-enum SettingMode
+enum class SettingMode
 {
-  SM_ESC,
-  SM_BRIGHT_LEVEL,
-  SM_LOWBAT_THRESHOLD,
-  SM_LANG
+  Esc,
+  Brightness,
+  LowBatThreshold,
+  Lang
 };
-static SettingMode settingMode = SM_ESC;
+static SettingMode settingMode = SettingMode::Esc;
 
-enum DispMode
+enum class DispMode
 {
-  DISP_BPM,
-  DISP_PLOT
+  Bpm,
+  Plot
 };
-static uint8_t dispMode = DISP_PLOT;
-constexpr int dispMode_SIZ = 2;
+static DispMode dispMode = DispMode::Plot;
 
 namespace AppConfig
 {
@@ -70,18 +75,30 @@ namespace AppConfig
     constexpr int MEAS_ITEM_POS = 2;
     constexpr int MEAS_ITEM_FONT_SIZE = 24;
   }
+
+  // Heart beat calculation settings
+  namespace HeartBeat
+  {
+    constexpr float VALID_WAVE_MIN = 2400.0;
+    constexpr float VALID_WAVE_MAX = 2900.0;
+    constexpr unsigned long VALID_BEAT_PERIOD_MIN_MS = 500;
+    constexpr unsigned long VALID_BEAT_PERIOD_MAX_MS = 2000;
+    constexpr float VALID_BPM_MIN = 30.0;
+    constexpr float VALID_BPM_MAX = 120.0;
+    constexpr float BPM_STABILITY_THRESHOLD = 10.0;
+    constexpr float BPM_WEIGHT_CURRENT = 0.4f;
+    constexpr float BPM_WEIGHT_PREV01 = 0.3f;
+    constexpr float BPM_WEIGHT_PREV02 = 0.3f;
+  }
+
+  // Plotting settings
+  namespace Plot
+  {
+    constexpr float AUTO_SCALE_FACTOR = 0.3;
+  }
 }
 
 // --- Key mapping constants ---
-const char KEY_SETTING_ESCAPE = '`';
-const char KEY_SETTING_BRIGHTNESS = '1';
-const char KEY_SETTING_LOWBAT = '2';
-const char KEY_SETTING_LANG = '3';
-const char KEY_SETTING_DISP = '0';
-const char KEY_UP = ';';
-const char KEY_DOWN = '.';
-const char KEY_LEFT = ',';
-const char KEY_RIGHT = '/';
 
 const char *BATLVL_TITLE[] = {"bat.", "電池"};
 static uint8_t BRIGHT_LVL;       // 0 - 255 : LCD bright level
@@ -101,12 +118,12 @@ void ky039Sensor();
 void calcBeat(float newData);
 void dispPlotModeInit();
 void graphFrame();
-void prtBPM(float temp_val, int dispMode);
-void dispInit(int mode);
+;
+void prtBPM(float temp_val, DispMode currentDispMode);
+void dispInit(DispMode mode);
 void dispBpmModeInit();
-bool keyCheck();
-void settings();
-void changeSettings(SettingMode mode, KeyNum keyNo);
+KeyNum keyCheck();
+void handleKeyPress(KeyNum key);
 void changeLang(KeyNum keyNo);
 bool updateLang(KeyNum keyNo);
 void dispBatItem();
@@ -133,7 +150,7 @@ void setup()
 
   settingsInit();
   ky039Init();
-  dispInit(DISP_PLOT);
+  dispInit(DispMode::Plot);
   canvas.pushSprite(0, 0);
 }
 
@@ -142,10 +159,13 @@ void loop()
   ky039Sensor();
   batteryState();
 
-  if (keyCheck())
-    settings();
+  KeyNum key = keyCheck();
+  if (key != KeyNum::None)
+  {
+    handleKeyPress(key);
+  }
 
-  if (dispMode == DISP_PLOT)
+  if (dispMode == DispMode::Plot)
     plot_do();
 
   // vTaskDelay(1);
@@ -211,12 +231,12 @@ void plot_do()
 
   // auto scale calculation
   float prev_range = PREV_PLOT_MAX - PREV_PLOT_MIN;
-  if (max_val > (PREV_PLOT_MAX + prev_range * 0.3) || max_val < (PREV_PLOT_MAX - prev_range * 0.3))
+  if (max_val > (PREV_PLOT_MAX + prev_range * AppConfig::Plot::AUTO_SCALE_FACTOR) || max_val < (PREV_PLOT_MAX - prev_range * AppConfig::Plot::AUTO_SCALE_FACTOR))
     PREV_PLOT_MAX = max_val;
   else
     max_val = PREV_PLOT_MAX;
 
-  if (min_val < (PREV_PLOT_MIN - prev_range * 0.3) || min_val > (PREV_PLOT_MIN + prev_range * 0.3))
+  if (min_val < (PREV_PLOT_MIN - prev_range * AppConfig::Plot::AUTO_SCALE_FACTOR) || min_val > (PREV_PLOT_MIN + prev_range * AppConfig::Plot::AUTO_SCALE_FACTOR))
     PREV_PLOT_MIN = min_val;
   else
     min_val = PREV_PLOT_MIN;
@@ -282,7 +302,7 @@ void calcBeat(float newData)
   // to maintain a sum of last measurements
   SAMPS[samp_pos++] = newData;
   samp_pos %= samp_siz;
-  
+
   // current_wave : current average of the values in the array
   float sum_val = 0;
   for (int i = 0; i < samp_siz; i++)
@@ -311,35 +331,35 @@ void calcBeat(float newData)
       // Calculate the weighed average of heartbeat rate
       // according  to the three last beats
       // bpm : beats per minute
-      float current_bpmVal = 60000.0 / (0.4 * current_beat + 0.3 * PREV_BEAT01 + 0.3 * PREV_BEAT02);
+      float current_bpmVal = 60000.0f / (AppConfig::HeartBeat::BPM_WEIGHT_CURRENT * current_beat + AppConfig::HeartBeat::BPM_WEIGHT_PREV01 * PREV_BEAT01 + AppConfig::HeartBeat::BPM_WEIGHT_PREV02 * PREV_BEAT02);
 
       // *** SELECT VALID DATA ***
-      if (current_wave < 2400.0 || current_wave > 2900.0) // AD value
+      if (current_wave < AppConfig::HeartBeat::VALID_WAVE_MIN || current_wave > AppConfig::HeartBeat::VALID_WAVE_MAX) // AD value
       {
         // Not the desired data
         dbPrtln("not desired data = " + String(current_wave));
-        prtBPM(-1.0, dispMode);   // not desired data
+        prtBPM(-1.0, ::dispMode); // not desired data
         canvas.pushSprite(0, 0);
       }
-      else if (current_beat < 500 || current_beat > 2000) // msec
+      else if (current_beat < AppConfig::HeartBeat::VALID_BEAT_PERIOD_MIN_MS || current_beat > AppConfig::HeartBeat::VALID_BEAT_PERIOD_MAX_MS) // msec
       {
         //  500msec period -> 2Hz   -> 120BPM .... invalid data
         // 2000msec period -> 0.5Hz ->  30BPM .... invalid data
         dbPrtln("invalid beat = " + String(current_beat));
       }
-      else if (current_bpmVal < 30.0 || current_bpmVal > 120.0) // bpm
+      else if (current_bpmVal < AppConfig::HeartBeat::VALID_BPM_MIN || current_bpmVal > AppConfig::HeartBeat::VALID_BPM_MAX) // bpm
       {
         // invalid heart beat bpm .... reject
         dbPrtln("invalid bpm value = " + String(current_bpmVal));
       }
-      else if (abs(current_bpmVal - PREV_BPMVAL01) > 10.0 || abs(current_bpmVal - PREV_BPMVAL02) > 10.0) // bpm
+      else if (abs(current_bpmVal - PREV_BPMVAL01) > AppConfig::HeartBeat::BPM_STABILITY_THRESHOLD || abs(current_bpmVal - PREV_BPMVAL02) > AppConfig::HeartBeat::BPM_STABILITY_THRESHOLD) // bpm
       {
-        // not stable 
+        // not stable
         dbPrtln(" not stable bpm value = " + String(current_bpmVal));
       }
       else
       {
-        prtBPM(current_bpmVal, dispMode);
+        prtBPM(current_bpmVal, ::dispMode);
         canvas.pushSprite(0, 0);
       }
       PREV_BPMVAL02 = PREV_BPMVAL01;
@@ -363,7 +383,7 @@ void dispPlotModeInit()
   canvas.fillScreen(TFT_BLACK); // all clear
 
   // BPM meas value '---.-'
-  prtBPM(-1.0, DISP_PLOT);
+  prtBPM(-1.0, DispMode::Plot);
 
   // meas unit -----
   canvas.setFont(&fonts::Font4);
@@ -399,7 +419,7 @@ constexpr int BPM_FONT_SIZE = 48;
 constexpr int BPM_LINE_INDEX = 3;
 constexpr int BPM_DISP_WIDTH = 27;
 static float PREV_BPM_DISP = 0.0;
-void prtBPM(float temp_val, int dispMode)
+void prtBPM(float temp_val, DispMode currentDispMode)
 {
   // Skip redrawing if the value hasn't changed.
   // This handles both number-to-number and NAN-to-NAN comparisons.
@@ -419,9 +439,9 @@ void prtBPM(float temp_val, int dispMode)
     snprintf(buf, sizeof(buf), "%3.1f", temp_val);
   }
 
-  switch (dispMode)
+  switch (currentDispMode)
   {
-  case DISP_BPM:
+  case DispMode::Bpm:
     canvas.fillRect(0, SC_LINES[BPM_LINE_INDEX], X_WIDTH, BPM_FONT_SIZE, TFT_BLACK); // clear
     canvas.setFont(&fonts::Font7);
     canvas.setTextSize(1);
@@ -429,8 +449,8 @@ void prtBPM(float temp_val, int dispMode)
     canvas.drawRightString(buf, X_WIDTH / 2 + 64, SC_LINES[BPM_LINE_INDEX]);
     break;
 
-  case DISP_PLOT:
-    if (settingMode != SM_ESC)
+  case DispMode::Plot:
+    if (settingMode != SettingMode::Esc)
       return;
 
     canvas.fillRect(0, 0, X_WIDTH / 2 - 24, 34, TFT_BLACK); // clear
@@ -447,14 +467,14 @@ void prtBPM(float temp_val, int dispMode)
 
 // ************************************************************************************
 
-void dispInit(int mode)
+void dispInit(DispMode mode)
 {
   switch (mode)
   {
-  case DISP_BPM:
+  case DispMode::Bpm:
     dispBpmModeInit();
     break;
-  case DISP_PLOT:
+  case DispMode::Plot:
     dispPlotModeInit();
     break;
   default:
@@ -496,114 +516,142 @@ void dispBpmModeInit()
   dispMeasItem();
 
   // meas value
-  prtBPM(-1.0, DISP_BPM);
+  prtBPM(-1.0, DispMode::Bpm);
 }
 
-bool keyCheck()
+KeyNum keyCheck()
 {
   M5Cardputer.update(); // update Cardputer key input
-
-  if (M5Cardputer.Keyboard.isChange())
+  if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed())
   {
-    if (M5Cardputer.Keyboard.isPressed())
-      return true;
+    // isKeyPressed()は、指定されたキーが現在押されているかをチェックします。
+    // この方法は、一度に一つのキーしか押されないことを前提としています。
+    if (M5Cardputer.Keyboard.isKeyPressed('`'))
+    {
+      return KeyNum::SettingEscape;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed('1'))
+    {
+      return KeyNum::SettingBrightness;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed('2'))
+    {
+      return KeyNum::SettingLowBat;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed('3'))
+    {
+      return KeyNum::SettingLang;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed('0'))
+    {
+      return KeyNum::SettingDisp;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed(';'))
+    {
+      return KeyNum::Up;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed('.'))
+    {
+      return KeyNum::Down;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed(','))
+    {
+      return KeyNum::Left;
+    }
+    else if (M5Cardputer.Keyboard.isKeyPressed('/'))
+    {
+      return KeyNum::Right;
+    }
   }
-  return false;
+  return KeyNum::None;
 }
 
-void settings()
+void handleKeyPress(KeyNum key)
 {
-  // Part 1: Handle setting mode changes.
-  // These keys change the current setting mode.
-  if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_ESCAPE))
+  bool modeChanged = false;
+
+  switch (key)
   {
-    if (settingMode == SM_ESC)
-      return;
-    settingMode = SM_ESC;
-  }
-  else if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_BRIGHTNESS))
+  case KeyNum::SettingEscape:
+    if (settingMode != SettingMode::Esc)
+    {
+      settingMode = SettingMode::Esc;
+      modeChanged = true;
+    }
+    break;
+  case KeyNum::SettingBrightness:
+    if (settingMode != SettingMode::Brightness)
+    {
+      settingMode = SettingMode::Brightness;
+      modeChanged = true;
+    }
+    break;
+  case KeyNum::SettingLowBat:
+    if (settingMode != SettingMode::LowBatThreshold)
+    {
+      settingMode = SettingMode::LowBatThreshold;
+      modeChanged = true;
+    }
+    break;
+  case KeyNum::SettingLang:
+    if (settingMode != SettingMode::Lang)
+    {
+      settingMode = SettingMode::Lang;
+      modeChanged = true;
+    }
+    break;
+  case KeyNum::SettingDisp:
   {
-    if (settingMode == SM_BRIGHT_LEVEL)
-      return;
-    settingMode = SM_BRIGHT_LEVEL;
-  }
-  else if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_LOWBAT))
-  {
-    if (settingMode == SM_LOWBAT_THRESHOLD)
-      return;
-    settingMode = SM_LOWBAT_THRESHOLD;
-  }
-  else if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_LANG))
-  {
-    if (settingMode == SM_LANG)
-      return;
-    settingMode = SM_LANG;
-  }
-  else if (M5Cardputer.Keyboard.isKeyPressed(KEY_SETTING_DISP))
-  {
-    dispMode = (dispMode + 1) % dispMode_SIZ;
+    // Toggle display mode between Bpm and Plot
+    int nextModeIndex = (static_cast<int>(dispMode) + 1) % 2;
+    dispMode = static_cast<DispMode>(nextModeIndex);
     dispInit(dispMode);
     canvas.pushSprite(0, 0);
     return;
   }
-  else
-  {
-    // Part 2: Handle value adjustments for the current mode.
-    // These keys adjust the value of the selected setting.
-    KeyNum keyNum = KN_NONE;
+  case KeyNum::Up:
+  case KeyNum::Down:
+  case KeyNum::Left:
+  case KeyNum::Right:
+    switch (settingMode)
+    {
+    case SettingMode::Brightness:
+      changeBright(key);
+      break;
+    case SettingMode::LowBatThreshold:
+      changeLowBatThr(key);
+      break;
+    case SettingMode::Lang:
+      changeLang(key);
+      break;
+    default:
+      break;
+    }
+    break;
 
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_UP))
-    {
-      keyNum = KN_UP;
-    }
-    else if (M5Cardputer.Keyboard.isKeyPressed(KEY_DOWN))
-    {
-      keyNum = KN_DOWN;
-    }
-    else if (M5Cardputer.Keyboard.isKeyPressed(KEY_LEFT))
-    {
-      keyNum = KN_LEFT;
-    }
-    else if (M5Cardputer.Keyboard.isKeyPressed(KEY_RIGHT))
-    {
-      keyNum = KN_RIGHT;
-    }
-    else
-    {
-      return; // No relevant key pressed for mode change or value adjustment.
-    }
-    changeSettings(settingMode, keyNum);
-    return; // Exit after handling value adjustment.
-  }
-
-  // This part is reached only when the mode has been changed (Part 1).
-  // It displays the initial state for the new mode.
-  changeSettings(settingMode, KN_NONE);
-}
-
-void changeSettings(SettingMode mode, KeyNum keyNo)
-{
-  switch (mode)
-  {
-  case SM_ESC:
-    canvas.fillRect(0, SC_LINES[1], X_WIDTH, H_CHR, TFT_BLACK);
-    break;
-  case SM_BRIGHT_LEVEL:
-    changeBright(keyNo);
-    break;
-  case SM_LOWBAT_THRESHOLD:
-    changeLowBatThr(keyNo);
-    break;
-  case SM_LANG:
-    changeLang(keyNo);
-    break;
-  // case SM_DISP:
-  //   changeDisp();
-  //   break;
   default:
-    return;
+    return; // Not a relevant key
   }
-  canvas.pushSprite(0, 0);
+
+  if (modeChanged)
+  {
+    switch (settingMode)
+    {
+    case SettingMode::Esc:
+      canvas.fillRect(0, SC_LINES[1], X_WIDTH, H_CHR, TFT_BLACK);
+      break;
+    case SettingMode::Brightness:
+      changeBright(KeyNum::None); // Display initial setting
+      break;
+    case SettingMode::LowBatThreshold:
+      changeLowBatThr(KeyNum::None); // Display initial setting
+      break;
+    case SettingMode::Lang:
+      changeLang(KeyNum::None); // Display initial setting
+      break;
+    }
+    canvas.pushSprite(0, 0);
+  }
 }
 
 void changeLang(KeyNum keyNo)
@@ -621,10 +669,10 @@ bool updateLang(KeyNum keyNo)
 {
   switch (keyNo)
   {
-  case KN_UP:
-  case KN_DOWN:
-  case KN_RIGHT:
-  case KN_LEFT:
+  case KeyNum::Up:
+  case KeyNum::Down:
+  case KeyNum::Right:
+  case KeyNum::Left:
     LANG_INDEX = (LANG_INDEX + 1) % (AppConfig::LANG_MAX + 1);
     return true; // Value changed
   default:
@@ -657,20 +705,21 @@ void dispMeasItem()
 
 bool updateSettingValue(uint8_t &value, KeyNum keyNo, uint8_t min, uint8_t max, uint8_t step, uint8_t big_step)
 {
-  int tempValue = value;
+  int tempValue = value; // Use int to prevent overflow during calculation
+  uint8_t original_value = value;
 
   switch (keyNo)
   {
-  case KN_UP:
+  case KeyNum::Up:
     tempValue += big_step;
     break;
-  case KN_DOWN:
+  case KeyNum::Down:
     tempValue -= big_step;
     break;
-  case KN_RIGHT:
+  case KeyNum::Right:
     tempValue += step;
     break;
-  case KN_LEFT:
+  case KeyNum::Left:
     tempValue -= step;
     break;
   default:
@@ -678,17 +727,9 @@ bool updateSettingValue(uint8_t &value, KeyNum keyNo, uint8_t min, uint8_t max, 
   }
 
   // Clamp the value to the allowed range
-  if (tempValue > max)
-    tempValue = max;
-  if (tempValue < min)
-    tempValue = min;
+  value = constrain(tempValue, min, max);
 
-  if (value != (uint8_t)tempValue)
-  {
-    value = (uint8_t)tempValue;
-    return true; // Value changed
-  }
-  return false; // No change in value
+  return value != original_value; // Return true if value changed
 }
 
 void prtSetting(const char *msg, uint8_t data)
@@ -710,6 +751,7 @@ void prtSetting(const char *msg, const char *data)
   canvas.setTextSize(1);
   canvas.fillRect(0, SC_LINES[1], X_WIDTH, H_CHR, TFT_BLACK); // clear L1
   canvas.drawString(msgBuf, W_CHR * AppConfig::Layout::SETTING_DISP_POS, SC_LINES[1]);
+  canvas.pushSprite(0, 0);
 }
 
 void changeBright(KeyNum keyNo)
