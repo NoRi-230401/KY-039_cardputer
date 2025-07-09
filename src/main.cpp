@@ -99,11 +99,11 @@ void ky039Init();
 void plot_do();
 void ky039Sensor();
 void calcBeat(float newData);
-void dispPlotMode();
+void dispPlotModeInit();
 void graphFrame();
 void prtBPM(float temp_val, int dispMode);
 void dispInit(int mode);
-void dispBpmMode();
+void dispBpmModeInit();
 bool keyCheck();
 void settings();
 void changeSettings(SettingMode mode, KeyNum keyNo);
@@ -229,7 +229,7 @@ void plot_do()
 
   for (int i = 0; i < WAVE_SIZ; i++)
   {
-    // *** wave data is converted to real LCD disp area  ***
+    // *** wave data is converted to real LCD disp area  (y: 134 to 35) ***
     float y_float = (float)y0_pos - (WAVE_DATA[(cPlotPos + i) % WAVE_SIZ] - bottom_pos) * multiplier;
     int32_t y = (int32_t)(y_float); // round down
     if ((y >= ymax_pos) && (y <= y0_pos))
@@ -262,8 +262,6 @@ void ky039Sensor()
 // -- moving averaging sampling
 // constexpr int samp_siz = 4;
 constexpr int samp_siz = 5;
-// constexpr int samp_siz = 6;
-// -----------------------------------
 static int samp_pos = 0; // current position in the array
 static float SAMPS[samp_siz] = {0};
 // ---------------------------------------------
@@ -278,21 +276,20 @@ static float PREV_BPMVAL02 = 60.0; // default 60bpm
 void calcBeat(float newData)
 {
   constexpr uint8_t rise_threshold = 4;
-  // constexpr uint8_t rise_threshold = 5;
-  // constexpr uint8_t rise_threshold = 6;
 
   // Add the  newest measurement to an array
   // and subtract the oldest measurement from  the array
   // to maintain a sum of last measurements
   SAMPS[samp_pos++] = newData;
   samp_pos %= samp_siz;
-  // new curve : average of the values in the array
+  
+  // current_wave : current average of the values in the array
   float sum_val = 0;
   for (int i = 0; i < samp_siz; i++)
     sum_val += SAMPS[i];
   float current_wave = sum_val / samp_siz;
 
-  // *** Plot data ***
+  // *** plot data at LCD display ***
   // Serial.printf(">current_curve:%f\n", current_curve);
   WAVE_DATA[WAVE_POS++] = current_wave;
   WAVE_POS %= WAVE_SIZ;
@@ -320,15 +317,15 @@ void calcBeat(float newData)
       if (current_wave < 2400.0 || current_wave > 2900.0) // AD value
       {
         // Not the desired data
-        dbPrtln(" invalid curve value = " + String(current_wave));
-        prtBPM(-1.0, dispMode); // invalid data
+        dbPrtln("not desired data = " + String(current_wave));
+        prtBPM(-1.0, dispMode);   // not desired data
         canvas.pushSprite(0, 0);
       }
       else if (current_beat < 500 || current_beat > 2000) // msec
       {
         //  500msec period -> 2Hz   -> 120BPM .... invalid data
         // 2000msec period -> 0.5Hz ->  30BPM .... invalid data
-        dbPrtln(" invalid curve_beat = " + String(current_beat));
+        dbPrtln("invalid beat = " + String(current_beat));
       }
       else if (current_bpmVal < 30.0 || current_bpmVal > 120.0) // bpm
       {
@@ -337,8 +334,8 @@ void calcBeat(float newData)
       }
       else if (abs(current_bpmVal - PREV_BPMVAL01) > 10.0 || abs(current_bpmVal - PREV_BPMVAL02) > 10.0) // bpm
       {
-        // distributed unevenly value ... not stable
-        dbPrtln(" distributed unevenly bpm value = " + String(current_bpmVal));
+        // not stable 
+        dbPrtln(" not stable bpm value = " + String(current_bpmVal));
       }
       else
       {
@@ -361,7 +358,7 @@ void calcBeat(float newData)
   PREV_WAVE = current_wave;
 }
 
-void dispPlotMode()
+void dispPlotModeInit()
 {
   canvas.fillScreen(TFT_BLACK); // all clear
 
@@ -388,7 +385,7 @@ void graphFrame()
   int x_max = X_WIDTH - 1;
   int y_max = Y_HEIGHT - 1;
 
-  // draw graph upper limit frame
+  // upper limit frame
   canvas.drawLine(0, y_max - plotY_siz - 1, x_max, y_max - plotY_siz - 1, TFT_DARKGREY);
 
   //   1-2-3-4 sec time frame
@@ -455,17 +452,17 @@ void dispInit(int mode)
   switch (mode)
   {
   case DISP_BPM:
-    dispBpmMode();
+    dispBpmModeInit();
     break;
   case DISP_PLOT:
-    dispPlotMode();
+    dispPlotModeInit();
     break;
   default:
     return;
   }
 }
 
-void dispBpmMode()
+void dispBpmModeInit()
 {
   // ---012345678901234567890123456789----
   // L0:- HC-SR04 Sensor -    bat.---%
