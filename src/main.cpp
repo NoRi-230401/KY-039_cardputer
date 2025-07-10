@@ -57,8 +57,8 @@ namespace AppConfig
   // Battery status check
   namespace Battery
   {
-    constexpr uint8_t BATLVL_FLUCTUATION_TOLERANCE = 5;
-    constexpr unsigned long BATTERY_CHECK_INTERVAL_MS = 1993UL; // Interval for battery level check
+    // constexpr uint8_t BATLVL_FLUCTUATION_TOLERANCE = 5;
+    constexpr unsigned long BATCHK_INTVAL_MS = 1993UL; // Interval for battery level check
     constexpr uint8_t LOWBAT_CONSECUTIVE_READINGS = 5;
   }
 
@@ -108,7 +108,7 @@ const char *NVM_LOWBAT = "lbat";
 const char *NVM_LANG = "lang";
 const char *LANG[] = {"English", "日本語"};
 static uint8_t LANG_INDEX = 0;
-const char *meas_items[] = {"Pulse Rate", "脈拍"};
+const char *meas_items[] = {"Pulse Rate", "脈拍数"};
 
 void setup();
 void loop();
@@ -118,7 +118,6 @@ void ky039Sensor();
 void calcBeat(float newData);
 void dispPlotModeInit();
 void graphFrame();
-;
 void prtBPM(float temp_val, DispMode currentDispMode);
 void dispInit(DispMode mode);
 void dispBpmModeInit();
@@ -189,7 +188,7 @@ uint16_t WAVE_POS = 0;
 constexpr int plotX_siz = 240;
 constexpr int plotY_siz = 100;
 
-static int X_MOVE = 0;
+// static int X_MOVE = 0;
 unsigned long PREV_PLOT_TM = 0;
 float PREV_PLOT_MIN = 4096.0;
 float PREV_PLOT_MAX = -1.0;
@@ -418,17 +417,9 @@ void graphFrame()
 constexpr int BPM_FONT_SIZE = 48;
 constexpr int BPM_LINE_INDEX = 3;
 constexpr int BPM_DISP_WIDTH = 27;
-static float PREV_BPM_DISP = 0.0;
+static float PREV_BPM_DISP = 0.0f;
 void prtBPM(float temp_val, DispMode currentDispMode)
 {
-  // Skip redrawing if the value hasn't changed.
-  // This handles both number-to-number and NAN-to-NAN comparisons.
-  // if (PREV_BPM_DISP == temp_val || (isnan(PREV_BPM_DISP) && isnan(temp_val)))
-  // {
-  //   return;
-  // }
-  // PREV_BPM_DISP = temp_val;
-
   char buf[10];
   if (isnan(temp_val) || temp_val < 0)
   {
@@ -464,8 +455,6 @@ void prtBPM(float temp_val, DispMode currentDispMode)
     return;
   }
 }
-
-// ************************************************************************************
 
 void dispInit(DispMode mode)
 {
@@ -524,8 +513,6 @@ KeyNum keyCheck()
   M5Cardputer.update(); // update Cardputer key input
   if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed())
   {
-    // isKeyPressed()は、指定されたキーが現在押されているかをチェックします。
-    // この方法は、一度に一つのキーしか押されないことを前提としています。
     if (M5Cardputer.Keyboard.isKeyPressed('`'))
     {
       return KeyNum::SettingEscape;
@@ -627,7 +614,7 @@ void handleKeyPress(KeyNum key)
     default:
       break;
     }
-    break;
+    return;
 
   default:
     return; // Not a relevant key
@@ -639,6 +626,7 @@ void handleKeyPress(KeyNum key)
     {
     case SettingMode::Esc:
       canvas.fillRect(0, SC_LINES[1], X_WIDTH, H_CHR, TFT_BLACK);
+      canvas.pushSprite(0, 0);
       break;
     case SettingMode::Brightness:
       changeBright(KeyNum::None); // Display initial setting
@@ -650,7 +638,6 @@ void handleKeyPress(KeyNum key)
       changeLang(KeyNum::None); // Display initial setting
       break;
     }
-    canvas.pushSprite(0, 0);
   }
 }
 
@@ -659,8 +646,9 @@ void changeLang(KeyNum keyNo)
   if (updateLang(keyNo))
   {
     wrtNVS(NVM_LANG, LANG_INDEX);
-    dispMeasItem();
     dispBatItem();
+    if (dispMode == DispMode::Bpm)
+      dispMeasItem();
   }
   prtSetting("lang = ", LANG[LANG_INDEX]);
 }
@@ -786,13 +774,10 @@ void settingsInit()
 }
 
 static unsigned long PREV_BATCHK_TM = 0L;
-static uint8_t PREV_BATLVL = 255; // Use an impossible value to force the first update
-static bool batCheck_first = true;
 void batteryState()
 {
   unsigned long currentTime = millis(); // Get current time once
-
-  if (currentTime - PREV_BATCHK_TM < AppConfig::Battery::BATTERY_CHECK_INTERVAL_MS)
+  if (currentTime - PREV_BATCHK_TM < AppConfig::Battery::BATCHK_INTVAL_MS)
     return;
 
   // This will update consecutiveLowBatteryCount
@@ -803,21 +788,6 @@ void batteryState()
     batLvl = AppConfig::BATLVL_MAX;
 
   lowBatteryCheck(batLvl);
-
-  if (batCheck_first)
-  {
-    batCheck_first = false;
-  }
-  else
-  { // ** stable battery level is valid **
-    if (abs(batLvl - PREV_BATLVL) > AppConfig::Battery::BATLVL_FLUCTUATION_TOLERANCE)
-    {
-      PREV_BATLVL = batLvl;
-      return;
-    }
-  }
-
-  PREV_BATLVL = batLvl;
   prtBatLvl(batLvl);
 }
 

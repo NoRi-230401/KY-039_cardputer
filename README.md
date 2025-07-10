@@ -24,12 +24,13 @@ This is an application that uses the M5Stack Cardputer and a KY-039 heart rate s
 
 ## Connections
 
-Connect the KY-039 sensor to the Cardputer's Grove port (Port.B).
+Connect the KY-039 sensor to the Cardputer's Grove port (Port.A).
+KY-039 Singal level must be down to 3.3Volts .  
 
-| KY-039 | Cardputer (Grove Port.B) |
+| KY-039 | Cardputer (Grove Port.A) |
 | :----: | :----------------------: |
-|   S    |            G1            |
-|  VCC   |           3.3V           |
+|   S    |            G1 (use Analog Input)   |
+|  VCC   |           5.0V           |
 |  GND   |           GND            |
 
 ## Installation
