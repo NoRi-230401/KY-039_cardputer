@@ -24,9 +24,11 @@ void m5stack_begin()
   cfg.serial_baudrate = 115200; // Serial communication speed
   cfg.internal_imu = false;     // Do not use IMU (accelerometer/gyroscope)
   cfg.internal_mic = false;     // Do not use microphone
-  // cfg.output_power = false;  // Disable Grove port power output
   cfg.led_brightness = 0;
+  // cfg.output_power = false;      // Disable Grove port power output
+  // cfg.output_power = true;      // Enable Grove port power output
   M5Cardputer.begin(cfg, true);
+  M5Cardputer.Power.begin();
 
 #ifdef PLATFORMIO_IDE_DEBUG
   // vsCode terminal cannot get serial data

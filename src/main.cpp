@@ -134,8 +134,8 @@ void changeBright(KeyNum keyNo);
 void changeLowBatThr(KeyNum keyNo);
 void settingsInit();
 void batteryState();
-void prtBatLvl(uint8_t batLvl);
-void lowBatteryCheck(uint8_t batLvl);
+void prtBatState(uint8_t batLvl, m5::Power_Class::is_charging_t isCharging);
+void lowBatCheck(uint8_t batLvl);
 
 void setup()
 {
@@ -780,19 +780,24 @@ void batteryState()
   if (currentTime - PREV_BATCHK_TM < AppConfig::Battery::BATCHK_INTVAL_MS)
     return;
 
-  // This will update consecutiveLowBatteryCount
   PREV_BATCHK_TM = currentTime;
+  
+  // get battery level %
   uint8_t batLvl = (uint8_t)M5Cardputer.Power.getBatteryLevel(); // Get battery level
-  // dbPrtln("batLvl: " + String(batLvl));
+  dbPrtln("batLvl: " + String(batLvl));
   if (batLvl > AppConfig::BATLVL_MAX)
     batLvl = AppConfig::BATLVL_MAX;
 
-  lowBatteryCheck(batLvl);
-  prtBatLvl(batLvl);
+  // get battery charging state
+  m5::Power_Class::is_charging_t isCharging = M5Cardputer.Power.isCharging();
+  dbPrtln("isCharging: " + String(isCharging));
+
+  lowBatCheck(batLvl); // Low battery check
+  prtBatState(batLvl, isCharging);
 }
 
 static uint8_t PREV_BATLVL_DISP = 255; // Use an impossible value to force the first update
-void prtBatLvl(uint8_t batLvl)
+void prtBatState(uint8_t batLvl, m5::Power_Class::is_charging_t isCharging)
 {
   // Line0 : battery level display
   //---- 012345678901234567890123456789---
@@ -807,7 +812,12 @@ void prtBatLvl(uint8_t batLvl)
   // dbPrtln(msg);
 
   canvas.fillRect(W_CHR * AppConfig::Layout::BATLVL_VALUE_POS, SC_LINES[0], W_CHR * AppConfig::Layout::BATLVL_VALUE_LEN, H_CHR, TFT_BLACK); // clear
-  canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  if (isCharging == m5::Power_Class::is_charging_t::is_charging)
+    canvas.setTextColor(TFT_YELLOW, TFT_BLACK); // charging
+  else
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK); // disCharge or unknown
+
   canvas.setFont(&fonts::lgfxJapanMincho_16);
   canvas.setTextSize(1);
   canvas.drawString(msg, W_CHR * AppConfig::Layout::BATLVL_VALUE_POS, SC_LINES[0]);
@@ -815,7 +825,7 @@ void prtBatLvl(uint8_t batLvl)
 }
 
 static uint8_t consecutiveLowBatteryCount = 0;
-void lowBatteryCheck(uint8_t batLvl)
+void lowBatCheck(uint8_t batLvl)
 {
   // Update consecutive low battery count
   if (batLvl < LOWBAT_THRESHOLD)
